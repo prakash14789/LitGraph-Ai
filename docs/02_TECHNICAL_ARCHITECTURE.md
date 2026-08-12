@@ -113,6 +113,7 @@ litgraph/
 ├── Dockerfile                      # Backend container
 ├── pyproject.toml                   # Poetry dependencies
 ├── .env.example                     # Environment variable template
+├── .pre-commit-config.yaml          # ruff + ruff-format as git pre-commit hooks (SETUP-009)
 ├── alembic/                         # Database migrations
 │   ├── alembic.ini
 │   └── versions/
@@ -206,18 +207,23 @@ litgraph/
 │   │
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
-│       ├── llm_client.py            # Unified LLM API client (supports OpenAI + Anthropic)
-│       ├── rate_limiter.py          # LLM API rate limiting
+│       ├── llm_client.py            # Unified LLM client — Gemini (default)/OpenAI/Anthropic,
+│       │                            # all via the OpenAI SDK against each provider's
+│       │                            # OpenAI-compatible endpoint. Retry + rate limiting live
+│       │                            # here too (no separate rate_limiter.py — one small class,
+│       │                            # one caller, not worth its own file).
 │       └── logging.py               # Structured logging setup
 │
 ├── tests/
-│   ├── conftest.py                  # Fixtures (test DB, mock LLM, sample papers)
+│   ├── conftest.py                  # Fixtures (test DB, mock LLM, sample papers) — built SETUP-009
 │   ├── unit/
-│   │   ├── test_chunker.py
-│   │   ├── test_entity_extractor.py
-│   │   ├── test_entity_resolver.py
-│   │   ├── test_hybrid_scorer.py
-│   │   └── test_context_builder.py
+│   │   ├── test_llm_client.py       # Built SETUP-008 — mocked retry/rate-limit/no-retry-on-auth
+│   │   ├── test_fixtures.py         # Built SETUP-009 — proves conftest fixtures actually work
+│   │   ├── test_chunker.py          # Not built yet — lands with INGEST-002
+│   │   ├── test_entity_extractor.py # Not built yet — lands with EXTRACT-001
+│   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
+│   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
+│   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
 │   │   ├── test_ingestion_pipeline.py
 │   │   ├── test_retrieval_pipeline.py
@@ -760,17 +766,23 @@ GEMINI_API_KEY=AIza...
 OPENAI_API_KEY=sk-...                  # keep unset/blank until scaling
 ANTHROPIC_API_KEY=sk-ant-...           # keep unset/blank until scaling
 
+# Model names use "-latest" aliases, not dated snapshots — verified live that
+# Google retires dated Gemini models for new API keys fast: gemini-2.5-flash-lite
+# and gemini-2.5-flash both 404 ("no longer available to new users") as of
+# 2026-08, while gemini-flash-latest works. gemini-flash-lite-latest is worth
+# trying for extraction (cheaper) but 503s ("high demand") often — fall back
+# to gemini-flash-latest if so.
+
 # Extraction model (high volume, cheaper/faster)
-EXTRACTION_MODEL=gemini-2.5-flash-lite # scale: gpt-4o-mini | claude-haiku-4-5-20251001
+EXTRACTION_MODEL=gemini-flash-latest
 EXTRACTION_MAX_TOKENS=4096
 EXTRACTION_TEMPERATURE=0.1             # Low temp for structured extraction
 
 # Generation model (user-facing, higher quality)
-GENERATION_MODEL=gemini-2.5-flash      # scale: gpt-4o | claude-sonnet-4-6
-                                        # (gemini-2.5-pro also free but only 5 RPM/100 RPD —
-                                        #  use sparingly if you need max quality on free tier)
+GENERATION_MODEL=gemini-flash-latest   # scale: gpt-4o | claude-sonnet-4-6
 GENERATION_MAX_TOKENS=2048
 GENERATION_TEMPERATURE=0.3
+LLM_RATE_LIMIT_RPM=15                  # Gemini free tier default (Flash: 15 RPM)
 
 # ─── Embedding ───
 # BUILD PHASE (default): local — free, no API call, no rate limit
@@ -872,12 +884,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    extraction_model: str = "gemini-2.5-flash-lite"
+    extraction_model: str = "gemini-flash-latest"
     extraction_max_tokens: int = 4096
     extraction_temperature: float = 0.1
-    generation_model: str = "gemini-2.5-flash"
+    generation_model: str = "gemini-flash-latest"
     generation_max_tokens: int = 2048
     generation_temperature: float = 0.3
+    llm_rate_limit_rpm: int = 15  # Gemini free tier default (Flash: 15 RPM)
 
     # Embedding
     embedding_provider: Literal["local", "openai"] = "local"

@@ -31,7 +31,9 @@ class Paper(Base):
     raw_text: Mapped[str | None] = mapped_column(Text)
     sections: Mapped[dict | None] = mapped_column(JSONB)  # {"introduction": "...", "method": "..."}
     ingestion_status: Mapped[IngestionStatus] = mapped_column(
-        Enum(IngestionStatus, name="ingestion_status", values_callable=lambda e: [m.value for m in e]),
+        Enum(
+            IngestionStatus, name="ingestion_status", values_callable=lambda e: [m.value for m in e]
+        ),
         default=IngestionStatus.PENDING,
         nullable=False,
         index=True,

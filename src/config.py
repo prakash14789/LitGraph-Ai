@@ -61,12 +61,17 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    extraction_model: str = "gemini-2.5-flash-lite"
+    # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini
+    # models for new API keys faster than this project's timeline (verified
+    # live: gemini-2.5-flash-lite and gemini-2.5-flash both 404'd as "no
+    # longer available to new users" while gemini-flash-latest worked fine).
+    extraction_model: str = "gemini-flash-latest"
     extraction_max_tokens: int = 4096
     extraction_temperature: float = 0.1
-    generation_model: str = "gemini-2.5-flash"
+    generation_model: str = "gemini-flash-latest"
     generation_max_tokens: int = 2048
     generation_temperature: float = 0.3
+    llm_rate_limit_rpm: int = 15  # Gemini free tier default (Flash: 15 RPM)
 
     # Embedding
     embedding_provider: Literal["local", "openai"] = "local"

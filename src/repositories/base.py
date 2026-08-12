@@ -32,7 +32,9 @@ class Repository(Generic[ModelType]):
     async def get_by_id(self, session: AsyncSession, id: uuid.UUID) -> ModelType | None:
         return await session.get(self.model, id)
 
-    async def list(self, session: AsyncSession, limit: int = 100, offset: int = 0) -> Sequence[ModelType]:
+    async def list(
+        self, session: AsyncSession, limit: int = 100, offset: int = 0
+    ) -> Sequence[ModelType]:
         result = await session.execute(select(self.model).limit(limit).offset(offset))
         return result.scalars().all()
 
