@@ -11,6 +11,7 @@ from src.config import settings
 from src.graph.connection import close_driver
 from src.graph.schema import init_schema
 from src.utils.logging import configure_logging
+from src.vectorstore.embedder import warm_up
 from src.vectorstore.store import init_collections
 
 configure_logging(settings.log_level)
@@ -20,6 +21,7 @@ configure_logging(settings.log_level)
 async def lifespan(_app: FastAPI):
     await init_schema()  # Neo4j constraints/indexes — idempotent, safe on every startup
     init_collections()  # Chroma paper_chunks / entity_embeddings — idempotent
+    warm_up()  # pre-load the local embedding model — see embedder.warm_up's docstring
     yield
     await close_driver()
 

@@ -7,7 +7,8 @@ an unprefixed infra endpoint (see main.py), not a versioned API route.
 
 from fastapi import APIRouter
 
-from src.api.routes import ingest
+from src.api.routes import ingest, query
 
 api_router = APIRouter()
 api_router.include_router(ingest.router, tags=["ingest"])
+api_router.include_router(query.router, tags=["query"])

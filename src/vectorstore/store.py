@@ -20,7 +20,12 @@ def get_client() -> chromadb.ClientAPI:
 
 
 def get_collection(name: str):
-    return get_client().get_or_create_collection(name=name)
+    # cosine, not Chroma's l2 default — matches how sentence-transformer
+    # embeddings are meant to be compared, and gives a bounded [0, 2]
+    # distance the hybrid scorer (RETRIEVAL-003) can combine with graph
+    # distance/confidence predictably. Only takes effect at creation time —
+    # an existing collection keeps whatever space it was made with.
+    return get_client().get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
 
 
 def init_collections() -> None:

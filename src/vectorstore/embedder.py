@@ -22,6 +22,18 @@ def _local_model():
         ) from exc
 
 
+def warm_up() -> None:
+    """Pre-load the local embedding model at process startup — loading it
+    (~10s: reads the model weights off disk, initializes torch) is a one-time
+    cost per process, but without this it lands on whichever request happens
+    to embed first. Measured live via /query/vanilla: cold retrieval took
+    10.5s, warm retrieval took 0.02s — the entire ticket's "<10s latency"
+    acceptance criterion was at risk purely from unlucky request ordering.
+    No-op for EMBEDDING_PROVIDER=openai — nothing local to preload there."""
+    if settings.embedding_provider == "local":
+        _local_model()
+
+
 def embed(texts: list[str]) -> list[list[float]]:
     """Embed a batch of strings. Returns one vector per input, same order."""
     if not texts:

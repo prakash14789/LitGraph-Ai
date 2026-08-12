@@ -141,13 +141,15 @@ litgraph/
 │   │   │   │                        # row; dispatching before commit risks the worker racing ahead
 │   │   │   │                        # of the transaction. Still atomic per-paper (see SETUP-004's
 │   │   │   │                        # atomicity note in 05_FEATURE_TICKETS.md).
-│   │   │   ├── query.py             # POST /query, POST /query/compare (graphrag vs vanilla)
+│   │   │   ├── query.py             # POST /query/vanilla — built INGEST-005. POST /query and
+│   │   │   │                        # /query/compare (graphrag, graphrag-vs-vanilla) land with
+│   │   │   │                        # RETRIEVAL-005/006, not built yet.
 │   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id}
 │   │   │   └── collections.py       # CRUD for paper collections
 │   │   ├── schemas/                 # Pydantic request/response models
 │   │   │   ├── ingest.py            # UploadResult, JobStatusResponse — built INGEST-004
-│   │   │   ├── query.py
+│   │   │   ├── query.py             # VanillaQueryRequest/Response, SourceChunk — built INGEST-005
 │   │   │   ├── graph.py
 │   │   │   └── papers.py
 │   │   └── dependencies.py          # FastAPI dependency injection (DB sessions, auth)
@@ -193,10 +195,14 @@ litgraph/
 │   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.)
 │   │   │   └── faithfulness.py      # Check: does answer follow from context? (self-audit)
 │   │   │
-│   │   └── vanilla_rag/             # Baseline comparison system
+│   │   └── vanilla_rag/             # Baseline comparison system — built INGEST-005
 │   │       ├── __init__.py
-│   │       ├── retriever.py         # Standard vector-only retrieval
-│   │       └── generator.py         # Standard RAG generation
+│   │       ├── retriever.py         # embed query -> query_similar(paper_chunks) -> top-K chunks
+│   │       │                        # with cosine similarity scores (1 - Chroma's cosine distance)
+│   │       └── generator.py         # Chunks -> context -> llm_client.complete() -> cited answer.
+│   │                                # paper_id -> title resolution needs a DB session, so it's
+│   │                                # done by the route layer, not here — keeps this module
+│   │                                # DB-free like retriever.py/store.py.
 │   │
 │   ├── models/                      # Database Models (SQLAlchemy for PostgreSQL)
 │   │   ├── __init__.py
@@ -225,8 +231,18 @@ litgraph/
 │   │
 │   ├── vectorstore/                 # Vector Store Interaction Layer
 │   │   ├── __init__.py
-│   │   ├── store.py                 # ChromaDB/Qdrant abstraction
-│   │   └── embedder.py              # Text → embedding (OpenAI or local model)
+│   │   ├── store.py                 # ChromaDB/Qdrant abstraction. Collections created with
+│   │   │                            # metadata={"hnsw:space": "cosine"} (INGEST-005 fix) — Chroma
+│   │   │                            # defaults to l2, which doesn't match how sentence-transformer
+│   │   │                            # embeddings are meant to be compared and doesn't give a
+│   │   │                            # bounded score the hybrid scorer (RETRIEVAL-003) can combine
+│   │   │                            # with graph distance/confidence. Only takes effect at
+│   │   │                            # creation — caught and fixed before any real data existed.
+│   │   └── embedder.py              # Text → embedding (OpenAI or local model). warm_up()
+│   │                                # (INGEST-005) pre-loads the local model at FastAPI startup —
+│   │                                # measured live that a cold model load costs ~10s, which would
+│   │                                # otherwise land on whichever request happens to embed first
+│   │                                # and blow the vanilla RAG endpoint's <10s latency budget.
 │   │
 │   ├── tasks/                       # Celery Async Tasks
 │   │   ├── __init__.py
@@ -273,6 +289,9 @@ litgraph/
 │   │   │                            # against 2 real arXiv papers during development
 │   │   ├── test_chunker.py          # Built INGEST-002 — hand-built ParsedPaper fixtures,
 │   │   │                            # tiny monkeypatched token limits to force multi-chunk cases
+│   │   ├── test_retriever.py        # Built INGEST-005 — mocked Chroma response
+│   │   ├── test_generator.py        # Built INGEST-005 — mock_llm_client fixture
+│   │   ├── test_embedder.py         # Built INGEST-005 — warm_up()'s provider branching only
 │   │   ├── test_entity_extractor.py # Not built yet — lands with EXTRACT-001
 │   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
@@ -293,6 +312,11 @@ litgraph/
 │   │   │                             # logic against the real test DB and real ChromaDB, using a
 │   │   │                             # synthetic PDF. Covers the full completed path and the
 │   │   │                             # failed path (bad pdf_path).
+│   │   ├── test_query_api.py         # Built INGEST-005 — real HTTP request against the real
+│   │   │                             # FastAPI app + real ChromaDB, mocked LLM. Live-verified
+│   │   │                             # separately (not in this file — needs a running worker +
+│   │   │                             # real Gemini key) that a real end-to-end query answers
+│   │   │                             # coherently with citations in ~2.5-4.5s once warmed up.
 │   │   ├── test_ingestion_pipeline.py
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
