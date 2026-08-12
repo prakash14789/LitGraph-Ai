@@ -219,11 +219,14 @@ Create `POST /api/v1/ingest/upload` endpoint. Accept multipart form with multipl
 
 Create `GET /api/v1/ingest/status/{job_id}` endpoint. Return current job status, entity/relation counts, error message if failed.
 
+**Atomicity note (from SETUP-004):** the `Paper` create and its `ExtractionJob` create must happen in **one transaction** — do both through the same `Depends(get_db)` session within a single request handler and let it commit once at the end. `Repository.create()` only flushes, it does not commit (deliberately, see `src/repositories/base.py`) — the request-scoped session in `src/api/dependencies.get_db()` is what commits. Don't call `create()` from two separate sessions/requests for the same paper, or a failed `ExtractionJob` insert will leave an orphaned `Paper` with no job.
+
 **Acceptance Criteria:**
 - Upload 3 PDFs → get 3 job IDs back
 - Invalid files rejected with descriptive error
 - Job status endpoint returns current processing step
 - Files saved with UUID names (not user-provided names)
+- Paper + ExtractionJob creation is atomic: if the ExtractionJob insert fails, the Paper row must not persist either (test by forcing a failure between the two creates)
 
 ---
 
