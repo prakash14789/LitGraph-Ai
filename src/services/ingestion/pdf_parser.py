@@ -56,6 +56,12 @@ _NAME_YEAR_REF_RE = re.compile(
 
 
 @dataclass
+class ParsedTable:
+    page_number: int  # 1-indexed
+    markdown: str
+
+
+@dataclass
 class ParsedPaper:
     full_text: str
     pages: list[str]  # raw per-page text — INGEST-002 needs this for page_number metadata
@@ -63,7 +69,7 @@ class ParsedPaper:
     references: list[str]
     title: str | None
     authors: list[str] | None
-    tables: list[str]  # markdown
+    tables: list[ParsedTable]
     error: str | None = None
 
     @property
@@ -193,7 +199,7 @@ def _extract_metadata(doc: fitz.Document) -> tuple[str | None, list[str] | None]
     return title, authors
 
 
-def _extract_tables(doc: fitz.Document) -> list[str]:
+def _extract_tables(doc: fitz.Document) -> list[ParsedTable]:
     tables = []
     for page in doc:
         try:
@@ -202,7 +208,9 @@ def _extract_tables(doc: fitz.Document) -> list[str]:
             continue  # older PyMuPDF without table support — skip, don't crash
         for table in found.tables:
             try:
-                tables.append(table.to_markdown())
+                tables.append(
+                    ParsedTable(page_number=page.number + 1, markdown=table.to_markdown())
+                )
             except Exception:
                 continue
     return tables

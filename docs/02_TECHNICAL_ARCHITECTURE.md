@@ -152,7 +152,12 @@ litgraph/
 │   │   │   │                        # splitting tries numbered ([1]) and name-year styles, keeps
 │   │   │   │                        # whichever actually segmented — real reference parsing is
 │   │   │   │                        # what GROBID exists for (considered, not used — too heavy).
-│   │   │   ├── chunker.py           # Sections → overlapping chunks (for vector store)
+│   │   │   ├── chunker.py           # Sections → overlapping chunks — built INGEST-002.
+│   │   │   │                        # Sentence-boundary packing (tiktoken cl100k_base), sliding
+│   │   │   │                        # overlap between chunks. page_number resolved by searching
+│   │   │   │                        # each chunk's text in the paper's raw per-page text
+│   │   │   │                        # (whitespace-normalized both sides); tables get their real
+│   │   │   │                        # page number straight from PyMuPDF's Table.page instead.
 │   │   │   ├── entity_extractor.py  # Chunk/section → entities (LLM-based)
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
@@ -229,7 +234,8 @@ litgraph/
 │   │   ├── test_pdf_parser.py       # Built INGEST-001 — synthetic PDF (deterministic, no real
 │   │   │                            # papers committed); heuristics separately verified live
 │   │   │                            # against 2 real arXiv papers during development
-│   │   ├── test_chunker.py          # Not built yet — lands with INGEST-002
+│   │   ├── test_chunker.py          # Built INGEST-002 — hand-built ParsedPaper fixtures,
+│   │   │                            # tiny monkeypatched token limits to force multi-chunk cases
 │   │   ├── test_entity_extractor.py # Not built yet — lands with EXTRACT-001
 │   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
