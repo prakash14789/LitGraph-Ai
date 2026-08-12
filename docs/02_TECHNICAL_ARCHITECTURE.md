@@ -158,6 +158,10 @@ litgraph/
 │   │   │   │                        # each chunk's text in the paper's raw per-page text
 │   │   │   │                        # (whitespace-normalized both sides); tables get their real
 │   │   │   │                        # page number straight from PyMuPDF's Table.page instead.
+│   │   │   ├── embedding_storage.py # Chunks → ChromaDB paper_chunks — built INGEST-003. Batches
+│   │   │   │                        # embed calls (100/batch, one API call per batch not per
+│   │   │   │                        # chunk). Skips re-embedding if paper_id already has chunks
+│   │   │   │                        # stored (checked via collection.get(where={"paper_id":...}))
 │   │   │   ├── entity_extractor.py  # Chunk/section → entities (LLM-based)
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
@@ -241,6 +245,10 @@ litgraph/
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
+│   │   ├── test_embedding_storage.py # Built INGEST-003 — talks to the real ChromaDB
+│   │   │                             # container, not a mock (that's the actual thing worth
+│   │   │                             # verifying: add/get(where=)/duplicate-skip against
+│   │   │                             # Chroma's real API)
 │   │   ├── test_ingestion_pipeline.py
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
