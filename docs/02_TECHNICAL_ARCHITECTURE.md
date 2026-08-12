@@ -120,6 +120,8 @@ litgraph/
 ├── src/
 │   ├── main.py                      # FastAPI app entry point
 │   ├── config.py                    # Settings (Pydantic BaseSettings, loads from .env)
+│   ├── db.py                        # SQLAlchemy async engine + session factory (added SETUP-004 —
+│   │                                 # not in the original tree, needed a home for engine/sessionmaker)
 │   │
 │   ├── api/                         # API Layer — route definitions only
 │   │   ├── __init__.py
@@ -169,10 +171,22 @@ litgraph/
 │   │
 │   ├── models/                      # Database Models (SQLAlchemy for PostgreSQL)
 │   │   ├── __init__.py
+│   │   ├── base.py                  # Shared DeclarativeBase (added — Alembic autogenerate needs
+│   │   │                             # one place that imports every model's metadata)
 │   │   ├── paper.py                 # Paper metadata table
 │   │   ├── collection.py            # Collection (group of papers)
 │   │   ├── extraction_job.py        # Tracks ingestion job status
-│   │   └── user.py                  # User accounts (if auth added)
+│   │   ├── query_log.py             # Query history (matches §4.1's query_log table — the
+│   │   │                             # original tree omitted this file even though the table
+│   │   │                             # was always in the schema)
+│   │   └── user.py                  # User accounts (not built — no auth in MVP, see Security §2.1)
+│   │
+│   ├── repositories/                # Generic CRUD (added SETUP-004 — not in the original tree)
+│   │   ├── __init__.py              # instantiates one Repository per model
+│   │   └── base.py                  # Repository[Model]: create/get_by_id/list/delete. Only
+│   │                                 # flushes, never commits — src/api/dependencies.get_db()
+│   │                                 # owns the transaction so multi-row operations in one
+│   │                                 # request commit/rollback together.
 │   │
 │   ├── graph/                       # Neo4j Interaction Layer
 │   │   ├── __init__.py
@@ -276,7 +290,9 @@ CREATE TABLE papers (
     raw_text        TEXT,                      -- Full extracted text
     sections        JSONB,                     -- {"introduction": "...", "method": "..."}
     ingestion_status ENUM('pending','processing','completed','failed'),
-    collection_id   UUID REFERENCES collections(id),
+    collection_id   UUID REFERENCES collections(id) ON DELETE SET NULL,  -- deleting a collection
+                                                       -- must not delete or block-delete its papers
+                                                       -- (POLISH-005: "delete collection, papers remain")
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );
@@ -706,10 +722,16 @@ CORS_ORIGINS=http://localhost:3000     # Frontend URL
 
 # ─── PostgreSQL ───
 POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
+POSTGRES_PORT=5432                     # container-internal port — always 5432
+POSTGRES_HOST_PORT=5432                # host-side port docker-compose maps to. Change this (and
+                                        # POSTGRES_PORT to match, for host-side tools) if you already
+                                        # have a local Postgres on 5432 — a real conflict hit during
+                                        # SETUP-004 build, since a native Postgres install silently
+                                        # shadowed the container on the default port
 POSTGRES_DB=litgraph
 POSTGRES_USER=litgraph_user
-POSTGRES_PASSWORD=<generate-strong-password>
+POSTGRES_PASSWORD=<generate-strong-password>   # required, no default — app fails at startup with a
+                                                # clear error if this is missing, not a buried auth error
 
 # ─── Neo4j ───
 NEO4J_URI=bolt://localhost:7687
@@ -717,8 +739,12 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=<generate-strong-password>
 
 # ─── ChromaDB ───
-CHROMA_HOST=localhost
-CHROMA_PORT=8001
+CHROMA_HOST=localhost                  # use "chromadb" (the service name) when backend/worker
+                                        # talk to it over the Docker network
+CHROMA_PORT=8000                       # container-internal port — always 8000, even though the
+                                        # host-mapped port below is 8001. Backend/worker connect
+                                        # over the Docker network at container-internal 8000; 8001
+                                        # is only for reaching it from your host machine (curl, etc.)
 CHROMA_COLLECTION_CHUNKS=paper_chunks
 CHROMA_COLLECTION_ENTITIES=entity_embeddings
 
@@ -785,12 +811,18 @@ PROCESSED_DIR=./data/processed
 
 ### 6.2 Config Class (Pydantic)
 
+**As actually implemented** (`src/config.py`, SETUP-003 + SETUP-004) — kept in sync with the real file rather than hand-maintained, since this drifted from an earlier draft (old Pydantic v1 `class Config` style, missing several fields that later tickets needed):
+
 ```python
 # src/config.py
-from pydantic_settings import BaseSettings
 from typing import Literal
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
     # App
     app_name: str = "litgraph"
     app_env: Literal["development", "staging", "production"] = "development"
@@ -802,31 +834,52 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "litgraph"
-    postgres_user: str
-    postgres_password: str
+    postgres_user: str = "litgraph_user"
+    postgres_password: str  # required — no safe default, fail loudly at startup if missing
 
     @property
     def database_url(self) -> str:
-        return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        """SQLAlchemy async DSN (used from SETUP-004 onward)."""
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def postgres_dsn(self) -> str:
+        """Raw asyncpg DSN (used for the /health ping — no ORM involved)."""
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
 
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str
+    neo4j_password: str  # required — no safe default, fail loudly at startup if missing
 
     # ChromaDB
     chroma_host: str = "localhost"
-    chroma_port: int = 8001
+    chroma_port: int = 8000
+    chroma_collection_chunks: str = "paper_chunks"
+    chroma_collection_entities: str = "entity_embeddings"
 
-    # LLM — default gemini (free tier) for build phase; flip to openai/anthropic to scale
+    # Redis / Celery
+    redis_url: str = "redis://localhost:6379/0"
+
+    # LLM
     llm_provider: Literal["gemini", "openai", "anthropic"] = "gemini"
     gemini_api_key: str = ""
-    openai_api_key: str = ""       # fill in when scaling
-    anthropic_api_key: str = ""    # fill in when scaling
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
     extraction_model: str = "gemini-2.5-flash-lite"
+    extraction_max_tokens: int = 4096
+    extraction_temperature: float = 0.1
     generation_model: str = "gemini-2.5-flash"
+    generation_max_tokens: int = 2048
+    generation_temperature: float = 0.3
 
-    # Embedding — default local (free, no rate limit) for build phase; flip to openai to scale
+    # Embedding
     embedding_provider: Literal["local", "openai"] = "local"
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimension: int = 384
@@ -838,28 +891,34 @@ class Settings(BaseSettings):
     hybrid_alpha: float = 0.4
     hybrid_beta: float = 0.4
     hybrid_gamma: float = 0.2
+    context_max_nodes: int = 20
 
     # Ingestion
+    max_papers_per_upload: int = 50
+    max_pdf_size_mb: int = 50
     chunk_size_tokens: int = 1000
     chunk_overlap_tokens: int = 200
     entity_confidence_threshold: float = 0.5
+    relation_confidence_threshold: float = 0.5
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # File storage
+    upload_dir: str = "./data/uploads"
+    processed_dir: str = "./data/processed"
+
 
 settings = Settings()
 ```
 
 ### 6.3 Docker Compose
 
+**As actually implemented** (SETUP-002 through SETUP-007) — `frontend` is still the target shape from `FE-001`, not built yet, so it's kept here as documentation of where this is headed rather than current state. Everything else below matches the real `docker-compose.yml`, including two things the original draft got wrong/incomplete: `chromadb/chroma:latest` was silently breaking on version-mismatch with the pinned Python client (see §8's tradeoffs table), and nothing had a `restart` policy, so a crashed container needed a manual `docker compose up` to come back.
+
 ```yaml
 # docker-compose.yml
-version: "3.9"
-
 services:
   backend:
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file: .env
@@ -873,28 +932,43 @@ services:
 
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: litgraph
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-litgraph}
+      POSTGRES_USER: ${POSTGRES_USER:-litgraph_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     ports:
-      - "5432:5432"
+      # Configurable host port — a native Postgres install on the dev machine silently shadowed
+      # the container on the default port during SETUP-004; see POSTGRES_HOST_PORT in §6.1.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-litgraph_user}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   neo4j:
     image: neo4j:5-community
+    restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_PLUGINS: '["apoc"]'
     ports:
       - "7474:7474"     # Browser
       - "7687:7687"     # Bolt
     volumes:
       - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:1.0.0   # pinned, not :latest — a client/server version mismatch on
+    restart: unless-stopped        # :latest crashed app startup during SETUP-006 (KeyError: '_type')
     ports:
       - "8001:8000"
     volumes:
@@ -902,11 +976,18 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   celery_worker:
     build: .
+    restart: unless-stopped
     command: celery -A src.tasks.celery_app worker --loglevel=info
     env_file: .env
     depends_on:
@@ -914,7 +995,10 @@ services:
       - postgres
       - neo4j
       - chromadb
+    volumes:
+      - ./data:/app/data
 
+  # --- Not built yet (FE-001) — target shape, shown here for the full picture ---
   frontend:
     build: ./frontend
     ports:
