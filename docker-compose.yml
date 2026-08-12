@@ -45,7 +45,7 @@ services:
       retries: 10
 
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:1.0.0
     ports:
       - "8001:8000"
     volumes:

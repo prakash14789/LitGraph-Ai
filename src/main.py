@@ -1,16 +1,30 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.router import api_router
 from src.api.routes import health
 from src.config import settings
+from src.graph.connection import close_driver
+from src.graph.schema import init_schema
 from src.utils.logging import configure_logging
+from src.vectorstore.store import init_collections
 
 configure_logging(settings.log_level)
 
-app = FastAPI(title="LitGraph API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await init_schema()  # Neo4j constraints/indexes — idempotent, safe on every startup
+    init_collections()  # Chroma paper_chunks / entity_embeddings — idempotent
+    yield
+    await close_driver()
+
+
+app = FastAPI(title="LitGraph API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
