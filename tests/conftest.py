@@ -20,7 +20,14 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def _ensure_test_db_exists() -> None:
+async def _recreate_test_db() -> None:
+    """Drop and recreate the test DB every session, rather than reusing
+    whatever's left from a previous run. create_all() only creates
+    tables/types that don't exist yet — it never alters an existing Postgres
+    ENUM to add new values, so a test DB left over from before a model
+    change (e.g. JobStatus gaining PARSING/CHUNKING/EMBEDDING) would silently
+    keep the old enum forever and fail with 'invalid input value'. A fresh
+    DB each session means create_all() always builds the current schema."""
     conn = await asyncpg.connect(
         host=settings.postgres_host,
         port=settings.postgres_port,
@@ -29,9 +36,8 @@ async def _ensure_test_db_exists() -> None:
         database="postgres",  # maintenance DB — the one guaranteed to exist
     )
     try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
         await conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
-    except asyncpg.DuplicateDatabaseError:
-        pass
     finally:
         await conn.close()
 
@@ -40,7 +46,7 @@ async def _ensure_test_db_exists() -> None:
 async def test_engine():
     """One engine for the whole test session, pointed at a DB dedicated to
     tests (never the dev DB) so a test run can't touch real data."""
-    await _ensure_test_db_exists()
+    await _recreate_test_db()
     url = settings.database_url.rsplit("/", 1)[0] + f"/{TEST_DB_NAME}"
     engine = create_async_engine(url)
     async with engine.begin() as conn:
@@ -61,6 +67,35 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
             await trans.rollback()
+
+
+@pytest.fixture
+async def test_client(test_engine):
+    """httpx client wrapping the real FastAPI app, with get_db overridden to
+    use the test engine instead of the dev database. Not built on db_session
+    (which rolls back per test) — some handlers (POST /ingest/upload)
+    deliberately commit mid-request so a dispatched Celery task can find a
+    durable row, and a mid-handler commit would defeat db_session's
+    rollback-based isolation. Tests here clean up their own rows instead."""
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.dependencies import get_db
+    from src.main import app
+
+    async def _override_get_db():
+        async with AsyncSession(bind=test_engine, expire_on_commit=False) as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app.dependency_overrides[get_db] = _override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture

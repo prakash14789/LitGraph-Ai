@@ -8,11 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.router import api_router
 from src.api.routes import health
 from src.config import settings
-from celery.result import AsyncResult
-
 from src.graph.connection import close_driver
 from src.graph.schema import init_schema
-from src.tasks.celery_app import celery_app, hello_world
 from src.utils.logging import configure_logging
 from src.vectorstore.store import init_collections
 
@@ -40,23 +37,3 @@ app.add_middleware(
 # /health is unprefixed (infra/monitoring convention) — everything else lives under /api/v1
 app.include_router(health.router)
 app.include_router(api_router, prefix="/api/v1")
-
-
-# --- SETUP-007 wiring check only --------------------------------------------
-# Proves the FastAPI process can dispatch a Celery task and read its result
-# back from Redis. Delete both routes once INGEST-004 adds a real task to
-# dispatch (paper upload -> ingestion job).
-@app.post("/api/v1/_debug/test-task")
-def dispatch_test_task() -> dict:
-    result = hello_world.delay()
-    return {"task_id": result.id}
-
-
-@app.get("/api/v1/_debug/test-task/{task_id}")
-def get_test_task_result(task_id: str) -> dict:
-    result = AsyncResult(task_id, app=celery_app)
-    return {
-        "task_id": task_id,
-        "status": result.status,
-        "result": result.result if result.ready() else None,
-    }

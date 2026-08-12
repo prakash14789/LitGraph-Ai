@@ -128,13 +128,25 @@ litgraph/
 │   │   ├── __init__.py
 │   │   ├── router.py                # Main router aggregator
 │   │   ├── routes/
-│   │   │   ├── ingest.py            # POST /ingest/upload, POST /ingest/arxiv
+│   │   │   ├── ingest.py            # POST /ingest/upload, GET /ingest/status/{job_id} — built
+│   │   │   │                        # INGEST-004. POST /ingest/arxiv still not built (POLISH-004).
+│   │   │   │                        # Upload is per-file partial-success, not all-or-nothing: one
+│   │   │   │                        # bad file in a batch is reported as "rejected" in that file's
+│   │   │   │                        # result entry, the rest still queue — not specified either way
+│   │   │   │                        # by the ticket, chosen for upload UX (10 files, 1 corrupt
+│   │   │   │                        # shouldn't block the other 9). Paper+ExtractionJob commit
+│   │   │   │                        # happens per-file, right after creation — not deferred to
+│   │   │   │                        # Depends(get_db)'s end-of-request commit like everywhere else
+│   │   │   │                        # — because the Celery dispatch right after must find a durable
+│   │   │   │                        # row; dispatching before commit risks the worker racing ahead
+│   │   │   │                        # of the transaction. Still atomic per-paper (see SETUP-004's
+│   │   │   │                        # atomicity note in 05_FEATURE_TICKETS.md).
 │   │   │   ├── query.py             # POST /query, POST /query/compare (graphrag vs vanilla)
 │   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id}
 │   │   │   └── collections.py       # CRUD for paper collections
 │   │   ├── schemas/                 # Pydantic request/response models
-│   │   │   ├── ingest.py
+│   │   │   ├── ingest.py            # UploadResult, JobStatusResponse — built INGEST-004
 │   │   │   ├── query.py
 │   │   │   ├── graph.py
 │   │   │   └── papers.py
@@ -218,8 +230,19 @@ litgraph/
 │   │
 │   ├── tasks/                       # Celery Async Tasks
 │   │   ├── __init__.py
-│   │   ├── celery_app.py            # Celery configuration
-│   │   └── ingest_task.py           # Background paper ingestion task
+│   │   ├── celery_app.py            # Celery configuration. include=["src.tasks.ingest_task"] is
+│   │   │                            # required, not decorative — the worker process starts via
+│   │   │                            # `celery -A src.tasks.celery_app` and never otherwise imports
+│   │   │                            # task modules, so a task defined without being in `include`
+│   │   │                            # registers on the API process (which does import it) but the
+│   │   │                            # worker rejects it as "unregistered".
+│   │   └── ingest_task.py           # litgraph.process_paper — built INGEST-004. Does the real
+│   │                                # parse -> chunk -> embed work (reuses INGEST-001/002/003
+│   │                                # directly) and updates ExtractionJob.status at each step.
+│   │                                # Entity/relation extraction (Epic 2) and INGEST-006's fuller
+│   │                                # orchestrator guarantees (partial-state cleanup) extend this
+│   │                                # later — kept here rather than pre-building
+│   │                                # src/services/ingestion/pipeline.py ahead of that ticket.
 │   │
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
@@ -231,7 +254,17 @@ litgraph/
 │       └── logging.py               # Structured logging setup
 │
 ├── tests/
-│   ├── conftest.py                  # Fixtures (test DB, mock LLM, sample papers) — built SETUP-009
+│   ├── conftest.py                  # Fixtures (test DB, mock LLM, sample papers) — built SETUP-009.
+│   │                                # Test DB is dropped and recreated every session (INGEST-004
+│   │                                # fix), not created-once-if-missing — create_all() only adds
+│   │                                # tables/types that don't exist, it never ALTERs an existing
+│   │                                # Postgres ENUM to add new values, so a test DB left over from
+│   │                                # before a model change would silently keep the stale enum and
+│   │                                # fail. Also added test_client (httpx wrapping the real FastAPI
+│   │                                # app, get_db overridden to the test engine) — built on a fresh
+│   │                                # per-request session, not the rollback-based db_session, since
+│   │                                # some handlers (POST /ingest/upload) deliberately commit
+│   │                                # mid-request.
 │   ├── unit/
 │   │   ├── test_llm_client.py       # Built SETUP-008 — mocked retry/rate-limit/no-retry-on-auth
 │   │   ├── test_fixtures.py         # Built SETUP-009 — proves conftest fixtures actually work
@@ -249,6 +282,17 @@ litgraph/
 │   │   │                             # container, not a mock (that's the actual thing worth
 │   │   │                             # verifying: add/get(where=)/duplicate-skip against
 │   │   │                             # Chroma's real API)
+│   │   ├── test_ingest_api.py        # Built INGEST-004 — real HTTP requests via httpx against
+│   │   │                             # the real FastAPI app + test DB. process_paper.delay is
+│   │   │                             # mocked (this ticket's scope is "dispatch correctly", not
+│   │   │                             # "the task ran"). Covers upload success/rejection, file-
+│   │   │                             # count limit, status endpoint, and the Paper+ExtractionJob
+│   │   │                             # atomicity guarantee (forces a failure between the two
+│   │   │                             # creates, asserts the Paper doesn't survive it either).
+│   │   ├── test_ingest_task.py       # Built INGEST-004 — the real parse->chunk->embed task
+│   │   │                             # logic against the real test DB and real ChromaDB, using a
+│   │   │                             # synthetic PDF. Covers the full completed path and the
+│   │   │                             # failed path (bad pdf_path).
 │   │   ├── test_ingestion_pipeline.py
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
@@ -339,8 +383,12 @@ CREATE TABLE collections (
 CREATE TABLE extraction_jobs (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     paper_id        UUID REFERENCES papers(id) ON DELETE CASCADE,
-    status          ENUM('queued','extracting_entities','extracting_relations',
-                         'resolving_entities','writing_graph','completed','failed'),
+    status          ENUM('queued','parsing','chunking','embedding','extracting_entities',
+                         'extracting_relations','resolving_entities','writing_graph',
+                         'completed','failed'),
+                    -- parsing/chunking/embedding added INGEST-004 (migration 7a1e9c2b4d8f) —
+                    -- the original list jumped straight from queued to extracting_entities,
+                    -- leaving no way to report progress during Epic 1's own processing steps.
     entities_found  INTEGER DEFAULT 0,
     relations_found INTEGER DEFAULT 0,
     error_message   TEXT,

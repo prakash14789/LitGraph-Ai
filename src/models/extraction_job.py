@@ -11,6 +11,9 @@ from src.models.base import Base
 
 class JobStatus(str, enum.Enum):
     QUEUED = "queued"
+    PARSING = "parsing"  # INGEST-004/006 — parse/chunk/embed steps, ahead of Epic 2's extraction
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
     EXTRACTING_ENTITIES = "extracting_entities"
     EXTRACTING_RELATIONS = "extracting_relations"
     RESOLVING_ENTITIES = "resolving_entities"
