@@ -144,7 +144,14 @@ litgraph/
 │   │   ├── __init__.py
 │   │   ├── ingestion/               # Paper → Graph pipeline
 │   │   │   ├── __init__.py
-│   │   │   ├── pdf_parser.py        # PDF → raw text + sections + tables
+│   │   │   ├── pdf_parser.py        # PDF → raw text + sections + tables — built INGEST-001.
+│   │   │   │                        # Section split is a header-line heuristic (known academic
+│   │   │   │                        # section names), not font analysis. Title/author extraction
+│   │   │   │                        # skips rotated text (arXiv sidebar watermarks) and merges
+│   │   │   │                        # multi-line titles at the same font size. Reference
+│   │   │   │                        # splitting tries numbered ([1]) and name-year styles, keeps
+│   │   │   │                        # whichever actually segmented — real reference parsing is
+│   │   │   │                        # what GROBID exists for (considered, not used — too heavy).
 │   │   │   ├── chunker.py           # Sections → overlapping chunks (for vector store)
 │   │   │   ├── entity_extractor.py  # Chunk/section → entities (LLM-based)
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
@@ -219,6 +226,9 @@ litgraph/
 │   ├── unit/
 │   │   ├── test_llm_client.py       # Built SETUP-008 — mocked retry/rate-limit/no-retry-on-auth
 │   │   ├── test_fixtures.py         # Built SETUP-009 — proves conftest fixtures actually work
+│   │   ├── test_pdf_parser.py       # Built INGEST-001 — synthetic PDF (deterministic, no real
+│   │   │                            # papers committed); heuristics separately verified live
+│   │   │                            # against 2 real arXiv papers during development
 │   │   ├── test_chunker.py          # Not built yet — lands with INGEST-002
 │   │   ├── test_entity_extractor.py # Not built yet — lands with EXTRACT-001
 │   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
