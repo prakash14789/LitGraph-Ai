@@ -61,6 +61,18 @@ services:
       timeout: 5s
       retries: 10
 
+  celery_worker:
+    build: .
+    command: celery -A src.tasks.celery_app worker --loglevel=info
+    env_file: .env
+    depends_on:
+      - redis
+      - postgres
+      - neo4j
+      - chromadb
+    volumes:
+      - ./data:/app/data
+
 volumes:
   pgdata:
   neo4jdata:

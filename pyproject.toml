@@ -21,6 +21,7 @@ alembic = "^1.13"
 chromadb = "^1.0"
 sentence-transformers = "^3.2"
 openai = "^1.54"
+celery = { extras = ["redis"], version = "^5.4" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
