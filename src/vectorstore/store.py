@@ -3,13 +3,19 @@ entity_embeddings (EXTRACT-004). Kept as plain sync calls: Chroma's client is
 sync, and the ingestion pipeline that will use this runs in Celery workers
 (also sync), so there's nothing to gain from wrapping it as async."""
 
+from functools import lru_cache
+
 import chromadb
 
 from src.config import settings
 from src.vectorstore.embedder import embed
 
 
+@lru_cache(maxsize=1)
 def get_client() -> chromadb.ClientAPI:
+    """One shared client per process — same caching pattern as the local
+    embedding model, instead of paying a fresh HTTP client + handshake on
+    every add_texts/query_similar call."""
     return chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
 
 

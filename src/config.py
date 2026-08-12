@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_db: str = "litgraph"
     postgres_user: str = "litgraph_user"
-    postgres_password: str = ""
+    postgres_password: str  # required — no safe default, fail loudly at startup if missing
 
     @property
     def database_url(self) -> str:
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
+    neo4j_password: str  # required — no safe default, fail loudly at startup if missing
 
     # ChromaDB
     chroma_host: str = "localhost"

@@ -1,5 +1,13 @@
 """Generic repository — one implementation of create/get_by_id/list/delete,
-parametrized by model, instead of four near-identical classes."""
+parametrized by model, instead of four near-identical classes.
+
+Deliberately does NOT commit — create/delete only flush (visible within the
+current transaction, not yet durable). The caller's session owns the
+transaction boundary (see src/api/dependencies.get_db, which commits once at
+the end of the request). This lets multiple repository calls in one request
+share one atomic commit/rollback instead of each committing independently —
+e.g. INGEST-004 creating a Paper + ExtractionJob together must not leave an
+orphaned Paper if the second insert fails."""
 
 import uuid
 from typing import Generic, Sequence, TypeVar
@@ -17,7 +25,7 @@ class Repository(Generic[ModelType]):
     async def create(self, session: AsyncSession, **kwargs) -> ModelType:
         obj = self.model(**kwargs)
         session.add(obj)
-        await session.commit()
+        await session.flush()
         await session.refresh(obj)
         return obj
 
@@ -33,5 +41,5 @@ class Repository(Generic[ModelType]):
         if obj is None:
             return False
         await session.delete(obj)
-        await session.commit()
+        await session.flush()
         return True
