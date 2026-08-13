@@ -180,7 +180,17 @@ litgraph/
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
 │   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
-│   │   │   └── pipeline.py          # Orchestrates the full ingestion pipeline
+│   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed — built INGEST-006.
+│   │   │                            # Entity/relation extraction (Epic 2) extends this later.
+│   │   │                            # On any step failure: marks job/paper FAILED with the error,
+│   │   │                            # and deletes any chunks that made it into Chroma before the
+│   │   │                            # failure — without that, embedding_storage's duplicate check
+│   │   │                            # (only checks whether *any* chunks exist for a paper_id)
+│   │   │                            # would see the partial data and skip re-embedding forever on
+│   │   │                            # retry. src/tasks/ingest_task.py is now just the thin sync
+│   │   │                            # Celery entrypoint (asyncio.run(run_pipeline(job_id))) — the
+│   │   │                            # real logic used to live there directly (INGEST-004), moved
+│   │   │                            # here once this ticket existed to build it properly.
 │   │   │
 │   │   ├── retrieval/               # Query → Retrieved Context
 │   │   │   ├── __init__.py
@@ -252,13 +262,10 @@ litgraph/
 │   │   │                            # task modules, so a task defined without being in `include`
 │   │   │                            # registers on the API process (which does import it) but the
 │   │   │                            # worker rejects it as "unregistered".
-│   │   └── ingest_task.py           # litgraph.process_paper — built INGEST-004. Does the real
-│   │                                # parse -> chunk -> embed work (reuses INGEST-001/002/003
-│   │                                # directly) and updates ExtractionJob.status at each step.
-│   │                                # Entity/relation extraction (Epic 2) and INGEST-006's fuller
-│   │                                # orchestrator guarantees (partial-state cleanup) extend this
-│   │                                # later — kept here rather than pre-building
-│   │                                # src/services/ingestion/pipeline.py ahead of that ticket.
+│   │   └── ingest_task.py           # litgraph.process_paper — built INGEST-004, reduced to a
+│   │                                # thin sync Celery entrypoint in INGEST-006 once
+│   │                                # src/services/ingestion/pipeline.py existed to hold the
+│   │                                # real orchestration logic.
 │   │
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
@@ -308,16 +315,19 @@ litgraph/
 │   │   │                             # count limit, status endpoint, and the Paper+ExtractionJob
 │   │   │                             # atomicity guarantee (forces a failure between the two
 │   │   │                             # creates, asserts the Paper doesn't survive it either).
-│   │   ├── test_ingest_task.py       # Built INGEST-004 — the real parse->chunk->embed task
-│   │   │                             # logic against the real test DB and real ChromaDB, using a
-│   │   │                             # synthetic PDF. Covers the full completed path and the
-│   │   │                             # failed path (bad pdf_path).
+│   │   ├── test_ingestion_pipeline.py # Built INGEST-004, renamed from test_ingest_task.py in
+│   │   │                             # INGEST-006 to match pipeline.py — the real parse->chunk
+│   │   │                             # ->embed logic against the real test DB and real ChromaDB,
+│   │   │                             # using a synthetic PDF. Covers completed, failed
+│   │   │                             # (bad pdf_path), unknown-job-id, and (INGEST-006) partial-
+│   │   │                             # chunk cleanup on failure — simulates one chunk actually
+│   │   │                             # landing in Chroma before a later step blows up, asserts
+│   │   │                             # zero chunks remain for that paper afterward.
 │   │   ├── test_query_api.py         # Built INGEST-005 — real HTTP request against the real
 │   │   │                             # FastAPI app + real ChromaDB, mocked LLM. Live-verified
 │   │   │                             # separately (not in this file — needs a running worker +
 │   │   │                             # real Gemini key) that a real end-to-end query answers
 │   │   │                             # coherently with citations in ~2.5-4.5s once warmed up.
-│   │   ├── test_ingestion_pipeline.py
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
