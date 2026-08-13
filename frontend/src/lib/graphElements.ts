@@ -54,9 +54,17 @@ export const EDGE_STYLE_BY_TYPE: Record<
 };
 export const DEFAULT_EDGE_STYLE = { lineStyle: "solid" as const, width: 1, color: "#CBD5E1" };
 
-export function nodeSize(labels: string[], usageCount: number | null | undefined): number {
-  if (labels[0] === "Claim") return 30; // spec: fixed size
-  return Math.round(Math.min(70, 24 + Math.sqrt(usageCount ?? 0) * 10));
+// compact: GRAPH-004's mini panel canvas — spec-required "smaller nodes",
+// implemented as a tighter base/clamp on the same sqrt-scaling formula
+// rather than a separate size scheme.
+export function nodeSize(
+  labels: string[],
+  usageCount: number | null | undefined,
+  compact = false
+): number {
+  if (labels[0] === "Claim") return compact ? 18 : 30; // spec: fixed size
+  const [base, max, scale] = compact ? [14, 40, 6] : [24, 70, 10];
+  return Math.round(Math.min(max, base + Math.sqrt(usageCount ?? 0) * scale));
 }
 
 export function edgeLabel(relType: string, properties: Record<string, unknown>): string {
@@ -70,7 +78,7 @@ export function edgeLabel(relType: string, properties: Record<string, unknown>):
   return style?.label ?? "";
 }
 
-export function toElements(nodes: CanvasNode[], edges: SubgraphEdge[]) {
+export function toElements(nodes: CanvasNode[], edges: SubgraphEdge[], compact = false) {
   const nodeIds = new Set(nodes.map((n) => n.id));
   return [
     ...nodes.map((n) => ({
@@ -78,7 +86,7 @@ export function toElements(nodes: CanvasNode[], edges: SubgraphEdge[]) {
         id: n.id,
         type: n.labels[0] ?? "",
         displayLabel: displayName(n.properties, n.id),
-        size: nodeSize(n.labels, n.usage_count),
+        size: nodeSize(n.labels, n.usage_count, compact),
       },
     })),
     // Cytoscape errors if an edge references a node not in the element set
@@ -92,7 +100,9 @@ export function toElements(nodes: CanvasNode[], edges: SubgraphEdge[]) {
           source: e.source,
           target: e.target,
           relType: e.rel_type,
-          edgeLabel: edgeLabel(e.rel_type, e.properties),
+          // GRAPH-004 spec: mini canvas has no edge labels — too little
+          // room, and the labels are secondary detail anyway.
+          edgeLabel: compact ? "" : edgeLabel(e.rel_type, e.properties),
         },
       })),
   ];

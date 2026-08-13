@@ -29,16 +29,24 @@ export function GraphCanvas({
   edges,
   onNodeSelect,
   className,
+  compact = false,
+  highlightIds,
 }: {
   nodes: CanvasNode[];
   edges: SubgraphEdge[];
   onNodeSelect?: (node: CanvasNode) => void;
   className?: string;
+  compact?: boolean; // GRAPH-004's mini panel: smaller nodes, no edge labels
+  highlightIds?: string[]; // GRAPH-004's "View full graph" hand-off: pre-highlight these on load
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const hasLaidOutRef = useRef(false);
   const lastTapRef = useRef<{ id: string; time: number } | null>(null);
+  // Read fresh in the layout effect without being a reactive dependency —
+  // only applied once, on the very first layout, not on every re-render.
+  const highlightIdsRef = useRef(highlightIds);
+  highlightIdsRef.current = highlightIds;
   const [display, setDisplay] = useState<{ nodes: CanvasNode[]; edges: SubgraphEdge[] }>({
     nodes,
     edges,
@@ -205,16 +213,30 @@ export function GraphCanvas({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    cy.json({ elements: toElements(display.nodes, display.edges) });
+    const isFirstLayout = !hasLaidOutRef.current;
+    cy.json({ elements: toElements(display.nodes, display.edges, compact) });
     cy.layout({
       name: "cose",
       animate: true,
       animationDuration: 400,
-      randomize: !hasLaidOutRef.current,
-      fit: !hasLaidOutRef.current,
+      randomize: isFirstLayout,
+      fit: isFirstLayout,
     }).run();
     hasLaidOutRef.current = true;
-  }, [display]);
+
+    // GRAPH-004: a subgraph handed off via "View full graph" arrives
+    // highlighted, not just present — only on the very first layout, so
+    // panning/expanding afterward doesn't keep re-selecting it.
+    if (isFirstLayout && highlightIdsRef.current?.length) {
+      const ids = new Set(highlightIdsRef.current);
+      const highlighted = cy.nodes().filter((n) => ids.has(n.id()));
+      highlighted.select();
+      highlighted
+        .connectedEdges()
+        .filter((e) => ids.has(e.source().id()) && ids.has(e.target().id()))
+        .addClass("highlighted");
+    }
+  }, [display, compact]);
 
   return (
     <div className={className ?? "relative h-full w-full"}>

@@ -1065,7 +1065,10 @@ litgraph/
 │       │   ├── GraphPage.tsx         # GRAPH-002: search box + GraphCanvas — a minimal real
 │       │   │                          # consumer proving the canvas actually works end to end,
 │       │   │                          # not the full toolbar/filters/legend/entity-sidebar page
-│       │   │                          # (that's GRAPH-003's separate 2-day scope).
+│       │   │                          # (that's GRAPH-003's separate 2-day scope). GRAPH-004:
+│       │   │                          # also reads ?entity_id=&highlight= (ContextPanel's "View
+│       │   │                          # full graph" hand-off) on mount to auto-load without
+│       │   │                          # re-typing the search that got the user here.
 │       │   ├── PapersPage.tsx        # FE-002: native drag-and-drop upload zone (no react-
 │       │   │                          # dropzone — HTML5 DnD events cover the AC), paper list
 │       │   │                          # polling GET /papers (not the per-job status endpoint —
@@ -1099,10 +1102,12 @@ litgraph/
 │       │   │                          # extension-less specifiers for it.
 │       │   └── graphElements.check.ts # Manual self-check (assert-based, no test framework in
 │       │                              # this project) for graphElements.ts's branching logic —
-│       │                              # Claim's fixed size, usage_count sqrt-scaling/clamping,
+│       │                              # Claim's fixed size, usage_count sqrt-scaling/clamping
+│       │                              # (both normal and GRAPH-004's `compact` mode),
 │       │                              # EVALUATES_ON/OUTPERFORMS's property-built labels,
-│       │                              # toElements dropping an edge that points outside the
-│       │                              # given node set. Run: `node src/lib/graphElements.check.ts`
+│       │                              # toElements dropping an edge that points outside the given
+│       │                              # node set and dropping all edge labels in compact mode.
+│       │                              # Run: `node src/lib/graphElements.check.ts`
 │       ├── components/
 │       │   ├── PaperDetailModal.tsx  # FE-002: native <dialog> (not a Radix Dialog — none
 │       │   │                          # installed yet) for X/Escape/outside-click close for free.
@@ -1120,14 +1125,24 @@ litgraph/
 │       │   │                          # (which don't fire through a delegated node selector, so
 │       │   │                          # the hovered id is tracked separately for those). Responsive
 │       │   │                          # via ResizeObserver -> cy.resize(). cytoscape ships its own
-│       │   │                          # TS types (no separate @types/cytoscape needed).
+│       │   │                          # TS types (no separate @types/cytoscape needed). GRAPH-004
+│       │   │                          # added `compact` (smaller nodes, no edge labels — same
+│       │   │                          # sqrt-scaling formula, tighter base/clamp, not a separate
+│       │   │                          # size scheme) and `highlightIds` (pre-selects + highlights
+│       │   │                          # a node set on the very first layout only, so panning/
+│       │   │                          # expanding afterward doesn't keep re-selecting it).
 │       │   ├── ContextPanel.tsx      # FE-004: sources list + color-coded entity tags for the
-│       │   │                          # latest answer, placeholder container for GRAPH-004's
-│       │   │                          # Cytoscape canvas (no Cytoscape code here — that ticket's
-│       │   │                          # own scope note). One `collapsed` boolean drives both a
+│       │   │                          # latest answer. One `collapsed` boolean drives both a
 │       │   │                          # lg+ sidebar (narrows to an icon strip) and a <lg bottom
 │       │   │                          # sheet (slides to a pull-tab) via Tailwind `lg:` classes —
-│       │   │                          # no JS media-query listener.
+│       │   │                          # no JS media-query listener. GRAPH-004: the subgraph slot
+│       │   │                          # is a real `compact` GraphCanvas (node click -> entity
+│       │   │                          # modal via the same onSelectEntity FE-004 already wired for
+│       │   │                          # the entity tags). "View full graph" navigates to
+│       │   │                          # /graph?entity_id=&highlight= — entity_id is the subgraph's
+│       │   │                          # top-ranked node (RETRIEVAL-003 sorts nodes[0] highest; the
+│       │   │                          # API has no dedicated "this is the seed" field), highlight
+│       │   │                          # is every node id in this subgraph.
 │       │   └── EntityDetailModal.tsx # FE-005: same native <dialog> pattern. Scoped to the
 │       │                              # *current answer's* retrieved subgraph (nodes/edges
 │       │                              # QueryResponse already returned) — "related entities" and

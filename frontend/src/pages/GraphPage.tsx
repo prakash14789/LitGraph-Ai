@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { GraphCanvas } from "@/components/GraphCanvas";
 import { Button } from "@/components/ui/button";
@@ -9,32 +10,61 @@ import type { GraphNode, SubgraphEdge } from "@/types";
 // interacts with real data. The real toolbar (collection/type filters,
 // layout switcher, legend, entity detail sidebar) is GRAPH-003's separate
 // scope — this is a search box standing in for it, not a first draft of it.
+//
+// GRAPH-004: ContextPanel's "View full graph" button links here with
+// ?entity_id=<seed>&highlight=<comma-separated ids> — read once on mount to
+// auto-load without the user re-typing the search that got them there.
 export function GraphPage() {
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<SubgraphEdge[]>([]);
+  const [highlightIds, setHighlightIds] = useState<string[] | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
-    const q = query.trim();
-    if (!q) return;
+  const loadFromEntity = async (entityId: string) => {
     setLoading(true);
     setError(null);
     try {
-      const { data: search } = await litgraphApi.searchEntities(q);
-      if (search.results.length === 0) {
-        setNodes([]);
-        setEdges([]);
-        setError("No matching entities found.");
-        return;
-      }
-      const { data: subgraph } = await litgraphApi.getSubgraph(search.results[0].id, 2);
+      const { data: subgraph } = await litgraphApi.getSubgraph(entityId, 2);
       setNodes(subgraph.nodes);
       setEdges(subgraph.edges);
     } catch {
       setError("Failed to load graph.");
     } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const entityId = searchParams.get("entity_id");
+    if (!entityId) return;
+    const highlight = searchParams.get("highlight");
+    setHighlightIds(highlight ? highlight.split(",") : undefined);
+    void loadFromEntity(entityId);
+    // Only ever consumes the params this page was navigated to with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const search = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setHighlightIds(undefined);
+    setLoading(true);
+    setError(null);
+    try {
+      const { data: results } = await litgraphApi.searchEntities(q);
+      if (results.results.length === 0) {
+        setNodes([]);
+        setEdges([]);
+        setError("No matching entities found.");
+        setLoading(false);
+        return;
+      }
+      await loadFromEntity(results.results[0].id);
+    } catch {
+      setError("Failed to load graph.");
       setLoading(false);
     }
   };
@@ -45,11 +75,11 @@ export function GraphPage() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void load()}
+          onKeyDown={(e) => e.key === "Enter" && void search()}
           placeholder="Search an entity to explore (full toolbar lands GRAPH-003)..."
           className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
-        <Button size="sm" onClick={() => void load()} disabled={loading || !query.trim()}>
+        <Button size="sm" onClick={() => void search()} disabled={loading || !query.trim()}>
           {loading ? "Loading…" : "Load"}
         </Button>
       </div>
@@ -62,7 +92,7 @@ export function GraphPage() {
             Search for an entity above to explore its graph.
           </div>
         ) : (
-          <GraphCanvas nodes={nodes} edges={edges} />
+          <GraphCanvas nodes={nodes} edges={edges} highlightIds={highlightIds} />
         )}
       </div>
     </div>

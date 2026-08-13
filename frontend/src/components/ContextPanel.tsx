@@ -1,6 +1,8 @@
-import { ChevronDown, ChevronUp, Network } from "lucide-react";
+import { ChevronDown, ChevronUp, Maximize2, Network } from "lucide-react";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
+import { GraphCanvas } from "@/components/GraphCanvas";
 import { DEFAULT_ENTITY_BORDER_CLASS, displayName, ENTITY_BORDER_CLASS } from "@/lib/entityColors";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store/chatStore";
@@ -18,9 +20,24 @@ export function ContextPanel({
   onSelectEntity: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const navigate = useNavigate();
   const nodes = message?.retrievedSubgraph?.nodes ?? [];
+  const edges = message?.retrievedSubgraph?.edges ?? [];
   const entityNodes = nodes.filter((n) => n.labels[0] !== "Paper");
   const sources = message?.citations ?? [];
+
+  // GRAPH-004: hand off to the Graph page seeded by this subgraph's
+  // top-ranked node (RETRIEVAL-003 sorts nodes[0] highest) — the API has no
+  // dedicated "this is the seed" field, so the best-ranked node stands in
+  // for one, and the full node id set travels along to be pre-highlighted.
+  const viewFullGraph = () => {
+    if (nodes.length === 0) return;
+    const params = new URLSearchParams({
+      entity_id: nodes[0].id,
+      highlight: nodes.map((n) => n.id).join(","),
+    });
+    navigate(`/graph?${params.toString()}`);
+  };
 
   return (
     <div
@@ -86,15 +103,34 @@ export function ContextPanel({
             )}
           </section>
 
-          {/* Placeholder container for GRAPH-004's Cytoscape mini-graph —
-              deliberately no Cytoscape code here (ticket's own scope note).
-              Sized/styled now so GRAPH-004 only has to drop the canvas in. */}
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Subgraph</h3>
-            <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-muted-foreground">
-              <Network className="h-6 w-6" />
-              <p className="text-xs">Graph view coming (GRAPH-004)</p>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground">Subgraph</h3>
+              {nodes.length > 0 && (
+                <button
+                  onClick={viewFullGraph}
+                  className="flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  <Maximize2 className="h-3 w-3" />
+                  View full graph
+                </button>
+              )}
             </div>
+            {nodes.length === 0 ? (
+              <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-muted-foreground">
+                <Network className="h-6 w-6" />
+                <p className="text-xs">Ask a question to see its subgraph.</p>
+              </div>
+            ) : (
+              <div className="h-48 overflow-hidden rounded-lg border border-border">
+                <GraphCanvas
+                  nodes={nodes}
+                  edges={edges}
+                  compact
+                  onNodeSelect={(node) => onSelectEntity(node.id)}
+                />
+              </div>
+            )}
           </section>
         </div>
       )}

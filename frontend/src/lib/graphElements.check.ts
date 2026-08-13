@@ -17,6 +17,13 @@ assert.equal(nodeSize(["Method"], null), 24);
 assert.equal(nodeSize(["Method"], 4), 44); // 24 + sqrt(4)*10 = 44
 assert.ok(nodeSize(["Method"], 10_000) <= 70);
 
+// nodeSize: GRAPH-004's compact mode uses a tighter base/clamp, still fixed
+// for Claim.
+assert.equal(nodeSize(["Claim"], 999, true), 18);
+assert.equal(nodeSize(["Method"], 0, true), 14);
+assert.ok(nodeSize(["Method"], 10_000, true) <= 40);
+assert.ok(nodeSize(["Method"], 4, true) < nodeSize(["Method"], 4, false));
+
 // edgeLabel: static labels from the style table.
 assert.equal(edgeLabel("EXTENDS", {}), "extends");
 assert.equal(edgeLabel("USES_METHOD", {}), ""); // no label in the spec table
@@ -49,5 +56,19 @@ const withDanglingEdge = toElements(
   [{ source: "n1", target: "not-in-set", rel_type: "USES_METHOD", properties: {} }]
 );
 assert.equal(withDanglingEdge.filter((e) => "source" in e.data).length, 0);
+
+// toElements: GRAPH-004's compact mode drops edge labels entirely.
+const compactElements = toElements(
+  [
+    { id: "n1", labels: ["Paper"], properties: {} },
+    { id: "n2", labels: ["Method"], properties: {} },
+  ],
+  [{ source: "n1", target: "n2", rel_type: "EXTENDS", properties: {} }],
+  true
+);
+const compactEdge = compactElements.find((e) => "source" in e.data) as
+  | { data: { edgeLabel: string } }
+  | undefined;
+assert.equal(compactEdge?.data.edgeLabel, "");
 
 console.log("graphElements.check.ts: all checks passed");
