@@ -145,13 +145,20 @@ litgraph/
 │   │   │   │                        # /query/compare (graphrag, graphrag-vs-vanilla) land with
 │   │   │   │                        # RETRIEVAL-005/006, not built yet.
 │   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
-│   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id}
+│   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id} — built
+│   │   │   │                        # INGEST-007. Ticket depends on EXTRACT-004 (graph writer),
+│   │   │   │                        # which hasn't landed — no paper has a (:Paper) node in Neo4j
+│   │   │   │                        # yet, so detail's entities/relationships lists are correctly
+│   │   │   │                        # empty for every real paper today, not faked. The delete
+│   │   │   │                        # route delegates entirely to
+│   │   │   │                        # services/papers/deletion.py.
 │   │   │   └── collections.py       # CRUD for paper collections
 │   │   ├── schemas/                 # Pydantic request/response models
 │   │   │   ├── ingest.py            # UploadResult, JobStatusResponse — built INGEST-004
 │   │   │   ├── query.py             # VanillaQueryRequest/Response, SourceChunk — built INGEST-005
 │   │   │   ├── graph.py
-│   │   │   └── papers.py
+│   │   │   └── papers.py            # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
+│   │   │                            # built INGEST-007
 │   │   └── dependencies.py          # FastAPI dependency injection (DB sessions, auth)
 │   │
 │   ├── services/                    # Business Logic Layer
@@ -205,14 +212,32 @@ litgraph/
 │   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.)
 │   │   │   └── faithfulness.py      # Check: does answer follow from context? (self-audit)
 │   │   │
-│   │   └── vanilla_rag/             # Baseline comparison system — built INGEST-005
+│   │   ├── vanilla_rag/             # Baseline comparison system — built INGEST-005
+│   │   │   ├── __init__.py
+│   │   │   ├── retriever.py         # embed query -> query_similar(paper_chunks) -> top-K chunks
+│   │   │   │                        # with cosine similarity scores (1 - Chroma's cosine distance)
+│   │   │   └── generator.py         # Chunks -> context -> llm_client.complete() -> cited answer.
+│   │   │                            # paper_id -> title resolution needs a DB session, so it's
+│   │   │                            # done by the route layer, not here — keeps this module
+│   │   │                            # DB-free like retriever.py/store.py.
+│   │   │
+│   │   └── papers/                  # Paper lifecycle logic outside ingestion — built INGEST-007
 │   │       ├── __init__.py
-│   │       ├── retriever.py         # embed query -> query_similar(paper_chunks) -> top-K chunks
-│   │       │                        # with cosine similarity scores (1 - Chroma's cosine distance)
-│   │       └── generator.py         # Chunks -> context -> llm_client.complete() -> cited answer.
-│   │                                # paper_id -> title resolution needs a DB session, so it's
-│   │                                # done by the route layer, not here — keeps this module
-│   │                                # DB-free like retriever.py/store.py.
+│   │       └── deletion.py          # delete_paper(db, paper_id) — the full cascade, as one
+│   │                                # function so it's testable independent of the route and
+│   │                                # reusable by future account-deletion logic. Order is
+│   │                                # leaf-data-first, Postgres row last (PDF file -> Neo4j
+│   │                                # orphan cleanup -> Chroma chunks + orphaned entity
+│   │                                # embeddings -> Postgres row) — a deliberate deviation from
+│   │                                # the ticket's literal 1-PDF/2-Postgres/3-Chroma/4-Neo4j
+│   │                                # listing: deleting Postgres first would mean a crash
+│   │                                # mid-cascade leaves orphaned files/vectors/graph data with
+│   │                                # no record anywhere that they still need cleanup. Neo4j
+│   │                                # orphan detection matches the ticket's own suggested Cypher
+│   │                                # shape: detach this paper's edges, then delete any neighbor
+│   │                                # left with zero remaining relationships. Verified with real
+│   │                                # hand-created Neo4j nodes (see test_papers_api.py) since
+│   │                                # EXTRACT-004 hasn't landed to populate real ones yet.
 │   │
 │   ├── models/                      # Database Models (SQLAlchemy for PostgreSQL)
 │   │   ├── __init__.py
@@ -236,7 +261,10 @@ litgraph/
 │   ├── graph/                       # Neo4j Interaction Layer
 │   │   ├── __init__.py
 │   │   ├── connection.py            # Neo4j driver setup + session management
-│   │   ├── queries.py               # Cypher query templates
+│   │   ├── queries.py               # Cypher query templates. PAPER_SUBGRAPH and
+│   │   │                            # DELETE_PAPER_CASCADE (INGEST-007) are ahead of the rest —
+│   │   │                            # written against §4.2's schema before EXTRACT-004 (graph
+│   │   │                            # writer) exists to populate real nodes.
 │   │   └── schema.py                # Graph schema initialization (constraints, indexes)
 │   │
 │   ├── vectorstore/                 # Vector Store Interaction Layer
@@ -328,6 +356,16 @@ litgraph/
 │   │   │                             # separately (not in this file — needs a running worker +
 │   │   │                             # real Gemini key) that a real end-to-end query answers
 │   │   │                             # coherently with citations in ~2.5-4.5s once warmed up.
+│   │   ├── test_papers_api.py        # Built INGEST-007 — real HTTP requests against the real
+│   │   │                             # FastAPI app + test Postgres + real ChromaDB + real Neo4j.
+│   │   │                             # Covers list/filter-by-collection, detail (sections present,
+│   │   │                             # entities/relationships correctly empty pending
+│   │   │                             # EXTRACT-004), 404s, and full delete cascade (PDF file,
+│   │   │                             # Postgres row, Chroma chunks). The shared-entity acceptance
+│   │   │                             # test hand-creates Method/Claim nodes matching §4.2's schema
+│   │   │                             # (no pipeline writes real ones yet), deletes one of two
+│   │   │                             # papers, and proves against real Neo4j that the shared
+│   │   │                             # Method survives while the paper-exclusive Claim is deleted.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
