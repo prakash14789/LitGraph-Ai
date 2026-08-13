@@ -20,6 +20,12 @@ INDEXES = [
 FULLTEXT_INDEXES = [
     "CREATE FULLTEXT INDEX paper_search IF NOT EXISTS FOR (p:Paper) ON EACH [p.title, p.abstract]",
     "CREATE FULLTEXT INDEX method_search IF NOT EXISTS FOR (m:Method) ON EACH [m.canonical_name, m.description]",
+    # Added GRAPH-001: GET /graph/search needs to rank-search Dataset/Author/
+    # Claim too, not just Paper/Method — same fulltext pattern, one index per
+    # label's name-ish field(s).
+    "CREATE FULLTEXT INDEX dataset_search IF NOT EXISTS FOR (d:Dataset) ON EACH [d.canonical_name, d.description]",
+    "CREATE FULLTEXT INDEX author_search IF NOT EXISTS FOR (a:Author) ON EACH [a.name]",
+    "CREATE FULLTEXT INDEX claim_search IF NOT EXISTS FOR (c:Claim) ON EACH [c.text]",
 ]
 
 

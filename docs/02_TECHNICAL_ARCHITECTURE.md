@@ -180,14 +180,23 @@ litgraph/
 │   │   │   │                        # Verified live in the test: a mocked LLM made to sleep 0.3s
 │   │   │   │                        # measures ~0.48s wall-clock total for both pipelines
 │   │   │   │                        # together, not ~0.6s+ serial.
-│   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
+│   │   │   ├── graph.py             # GET /graph/overview, /graph/subgraph, /graph/entity/{id},
+│   │   │   │                        # /graph/search — built GRAPH-001. /graph/subgraph reuses
+│   │   │   │                        # RETRIEVAL-002's retrieve_subgraph() with a single-entity
+│   │   │   │                        # seed rather than a second traversal implementation. Every
+│   │   │   │                        # node gets one generic `usage_count` field (not the ticket's
+│   │   │   │                        # literal 4 differently-named examples) — Paper's is a
+│   │   │   │                        # relationship-degree proxy since no CITES edge is ever
+│   │   │   │                        # written (relation_extractor.py extracts it as a candidate
+│   │   │   │                        # type, pipeline.py never persists it); Method/Dataset/Author
+│   │   │   │                        # come from real USES_METHOD/EVALUATES_ON/AUTHORED_BY counts.
+│   │   │   │                        # /graph/search added 3 new fulltext indexes (schema.py) for
+│   │   │   │                        # Dataset/Author/Claim — only Paper/Method had one before.
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id} — built
-│   │   │   │                        # INGEST-007. Ticket depends on EXTRACT-004 (graph writer),
-│   │   │   │                        # which hasn't landed — no paper has a (:Paper) node in Neo4j
-│   │   │   │                        # yet, so detail's entities/relationships lists are correctly
-│   │   │   │                        # empty for every real paper today, not faked. The delete
-│   │   │   │                        # route delegates entirely to
-│   │   │   │                        # services/papers/deletion.py.
+│   │   │   │                        # INGEST-007. Once EXTRACT-004 (graph writer) landed, detail's
+│   │   │   │                        # entities/relationships lists reflect the real graph — FE-002's
+│   │   │   │                        # PaperDetailModal renders them live. The delete route
+│   │   │   │                        # delegates entirely to services/papers/deletion.py.
 │   │   │   └── collections.py       # CRUD for paper collections
 │   │   ├── schemas/                 # Pydantic request/response models
 │   │   │   ├── ingest.py            # UploadResult, JobStatusResponse — built INGEST-004
@@ -198,7 +207,9 @@ litgraph/
 │   │   │   │                        # Response — built RETRIEVAL-006 for POST /query/compare
 │   │   │   │                        # (wraps one QueryResponse + one VanillaQueryResponse plus
 │   │   │   │                        # total_latency_ms, no new fields of their own needed).
-│   │   │   ├── graph.py
+│   │   │   ├── graph.py             # GraphOverview, GraphNodeSchema (reuses query.py's
+│   │   │   │                        # SubgraphEdgeSchema for edges rather than a duplicate),
+│   │   │   │                        # EntityDetailResponse, SearchResponse — built GRAPH-001
 │   │   │   └── papers.py            # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
 │   │   │                            # built INGEST-007
 │   │   └── dependencies.py          # FastAPI dependency injection (DB sessions, auth)
@@ -958,7 +969,15 @@ litgraph/
 │   │   │                             # actually overlap (measured ~0.48s) rather than serializing
 │   │   │                             # (would measure ~0.6s+ real DB/Chroma overhead on each side).
 │   │   ├── test_retrieval_pipeline.py
-│   │   └── test_graph_queries.py
+│   │   └── test_graph_api.py          # Built GRAPH-001 — real HTTP requests, real Neo4j, hand-
+│   │                                   # built Cypher fixtures (same pattern as
+│   │                                   # test_graph_retriever.py). 7 tests: overview counts include
+│   │                                   # a fixture Paper/Method/edge, subgraph expansion returns a
+│   │                                   # correct usage_count (Method used by 2 papers -> 2),
+│   │                                   # subgraph 404 for an unknown entity_id, entity detail
+│   │                                   # returns its relationships + usage_count with direction,
+│   │                                   # entity 404, fulltext search finds a tagged fixture and
+│   │                                   # respects the type filter, unknown type -> 400.
 │   └── eval/
 │       ├── eval_dataset.json         # 50 multi-hop questions with gold answers
 │       ├── run_eval.py               # Run both systems, score, output comparison
@@ -1229,6 +1248,10 @@ CREATE INDEX dataset_domain IF NOT EXISTS FOR (d:Dataset) ON (d.domain);
 // Full-text search indexes
 CREATE FULLTEXT INDEX paper_search IF NOT EXISTS FOR (p:Paper) ON EACH [p.title, p.abstract];
 CREATE FULLTEXT INDEX method_search IF NOT EXISTS FOR (m:Method) ON EACH [m.canonical_name, m.description];
+// Added GRAPH-001 — GET /graph/search needs to rank-search these labels too:
+CREATE FULLTEXT INDEX dataset_search IF NOT EXISTS FOR (d:Dataset) ON EACH [d.canonical_name, d.description];
+CREATE FULLTEXT INDEX author_search IF NOT EXISTS FOR (a:Author) ON EACH [a.name];
+CREATE FULLTEXT INDEX claim_search IF NOT EXISTS FOR (c:Claim) ON EACH [c.text];
 
 // Node structure examples:
 // (:Paper {paper_id, title, authors, year, venue, abstract, embedding: [float]})
@@ -1949,6 +1972,16 @@ volumes:
 | `GET` | `/api/v1/graph/subgraph?entity_id={id}&hops={n}` | Get N-hop subgraph from an entity. For visualization. |
 | `GET` | `/api/v1/graph/entity/{id}` | Full entity details + all connected relationships. |
 | `GET` | `/api/v1/graph/search?q={text}&type={entity_type}` | Search entities by text + optional type filter. |
+
+**As actually implemented (GRAPH-001):** `entity_id`/`{id}` are Neo4j
+elementIds (same space RETRIEVAL-001/002 already use, not a separate ID
+scheme). `hops` defaults to 2, clamped 1-4. `type` on `/search` must be one
+of `Paper|Method|Dataset|Author|Claim` (400 if not — `Metric` has no
+fulltext index, same scope trim as its missing `usage_count`). `/subgraph`
+and `/entity/{id}` both return a `usage_count: int | null` per node — see
+`src/api/schemas/graph.py`'s docstring for exactly what it measures per
+type, notably that Paper's is a relationship-degree proxy since no `CITES`
+edge is ever written.
 
 ### 7.4 Papers
 

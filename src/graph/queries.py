@@ -48,6 +48,27 @@ DETACH DELETE n
 RETURN collect(id) AS orphaned_ids
 """
 
+# GRAPH-001 — GET /graph/overview's two stat queries.
+NODE_COUNTS_BY_LABEL = "MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count"
+EDGE_COUNTS_BY_TYPE = "MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS count"
+
+# GRAPH-001 — GET /graph/entity/{id}. Two queries instead of one OPTIONAL
+# MATCH: collect()-ing a map built from a possibly-null r/m (OPTIONAL MATCH
+# with no match) still produces one bogus all-null entry, so a plain MATCH
+# here (naturally empty when there are no relationships) is simpler than
+# filtering that out in Python.
+ENTITY_BY_ID = (
+    "MATCH (n) WHERE elementId(n) = $id "
+    "RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties"
+)
+ENTITY_RELATIONSHIPS = """
+MATCH (n)-[r]-(m) WHERE elementId(n) = $id
+RETURN type(r) AS rel_type, startNode(r) = n AS from_self,
+       elementId(m) AS other_id, labels(m) AS other_labels,
+       coalesce(m.canonical_name, m.name, m.title, m.text) AS other_name,
+       properties(r) AS properties
+"""
+
 # Every existing Method/Dataset node, across all papers — the "real Neo4j
 # lookup" entity_resolver.py's and relation_extractor.py's candidate-list
 # interfaces were always designed around (see their own module docstrings).
