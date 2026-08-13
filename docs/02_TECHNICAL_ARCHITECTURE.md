@@ -1059,10 +1059,31 @@ litgraph/
 │       │                              # logic (not just state) so ChatPage stays a dumb view.
 │       │                              # Session-only — no persist middleware, matches the
 │       │                              # ticket's own "preserved during session" AC, not more.
-│       ├── components/PaperDetailModal.tsx  # FE-002: native <dialog> (not a Radix Dialog —
-│       │                              # none installed yet) for X/Escape/outside-click close
-│       │                              # for free; entity tags colored via the entity.* tokens
-│       │                              # from FE-001's tailwind.config.js.
+│       │                              # ChatMessage also carries retrievedSubgraph (FE-004)
+│       │                              # straight from QueryResponse, no separate fetch.
+│       ├── lib/entityColors.ts       # Entity-label -> Tailwind border/text class map + a
+│       │                              # displayName() properties fallback chain — centralized
+│       │                              # (FE-004) once a 3rd consumer (ContextPanel) needed the
+│       │                              # same map PaperDetailModal/EntityDetailModal already had.
+│       ├── components/
+│       │   ├── PaperDetailModal.tsx  # FE-002: native <dialog> (not a Radix Dialog — none
+│       │   │                          # installed yet) for X/Escape/outside-click close for free.
+│       │   ├── ContextPanel.tsx      # FE-004: sources list + color-coded entity tags for the
+│       │   │                          # latest answer, placeholder container for GRAPH-004's
+│       │   │                          # Cytoscape canvas (no Cytoscape code here — that ticket's
+│       │   │                          # own scope note). One `collapsed` boolean drives both a
+│       │   │                          # lg+ sidebar (narrows to an icon strip) and a <lg bottom
+│       │   │                          # sheet (slides to a pull-tab) via Tailwind `lg:` classes —
+│       │   │                          # no JS media-query listener.
+│       │   └── EntityDetailModal.tsx # FE-005: same native <dialog> pattern. Scoped to the
+│       │                              # *current answer's* retrieved subgraph (nodes/edges
+│       │                              # QueryResponse already returned) — "related entities" and
+│       │                              # "source papers" mean within this answer's context, not
+│       │                              # the full graph, since global per-entity lookup is
+│       │                              # GRAPH-001's scope and isn't built. Clicking a related
+│       │                              # entity swaps the modal's content in place (the ticket's
+│       │                              # own documented alternative to navigating to a Graph page
+│       │                              # that doesn't exist yet either).
 │       ├── services/
 │       │   └── api.ts                # Axios client, VITE_API_URL base (04_FRONTEND_
 │       │                              # SPECIFICATION.md §7.1 — no auth interceptors, MVP has no

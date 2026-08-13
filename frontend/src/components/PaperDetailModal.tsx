@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { DEFAULT_ENTITY_BORDER_CLASS, ENTITY_BORDER_CLASS } from "@/lib/entityColors";
 import { cn } from "@/lib/utils";
 import type { PaperDetail } from "@/types";
 
@@ -7,13 +8,6 @@ import type { PaperDetail } from "@/types";
 // installed yet, and <dialog> gives focus-trap, Escape-to-close, and a
 // ::backdrop for free (FE-002's "closeable via X, Escape, or outside click"
 // AC needs no extra code for the last two).
-const ENTITY_BORDER: Record<string, string> = {
-  Paper: "border-entity-paper text-entity-paper",
-  Method: "border-entity-method text-entity-method",
-  Dataset: "border-entity-dataset text-entity-dataset",
-  Claim: "border-entity-claim text-entity-claim",
-  Author: "border-entity-author text-entity-author",
-};
 
 export function PaperDetailModal({
   paper,
@@ -80,7 +74,7 @@ export function PaperDetailModal({
                     key={e.id}
                     className={cn(
                       "rounded-full border px-2 py-0.5 text-xs",
-                      ENTITY_BORDER[e.type] ?? "border-border text-muted-foreground"
+                      ENTITY_BORDER_CLASS[e.type] ?? DEFAULT_ENTITY_BORDER_CLASS
                     )}
                   >
                     {e.name} <span className="opacity-60">· {e.type}</span>

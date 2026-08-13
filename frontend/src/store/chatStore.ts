@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import { litgraphApi } from "@/services/api";
-import type { Citation, RetrievalStats } from "@/types";
+import type { Citation, RetrievalStats, RetrievedSubgraph } from "@/types";
 
 export interface ChatMessage {
   id: string;
@@ -9,6 +9,7 @@ export interface ChatMessage {
   content: string;
   citations?: Citation[];
   retrievalStats?: RetrievalStats;
+  retrievedSubgraph?: RetrievedSubgraph; // FE-004/FE-005: context panel + entity modal
 }
 
 interface ChatState {
@@ -48,6 +49,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             content: data.answer,
             citations: data.citations,
             retrievalStats: data.retrieval_stats,
+            retrievedSubgraph: data.retrieved_subgraph,
           },
         ],
         isLoading: false,

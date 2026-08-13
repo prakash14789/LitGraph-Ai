@@ -46,6 +46,7 @@ export default {
           dataset: "#F59E0B",
           claim: "#EF4444",
           author: "#8B5CF6",
+          metric: "#06B6D4",
         },
       },
       borderRadius: {
