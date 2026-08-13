@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic", "groq"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter"] = "gemini"
     gemini_api_key: str = ""
     # Optional 2nd Gemini key — llm_client.py switches to it automatically
     # once gemini_api_key hits a 429 quota error. A free key's daily cap can
@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     groq_api_key_fallback_2: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    # OpenRouter — single OpenAI-compatible endpoint proxying many vendors'
+    # models, several with a free ":free" variant. Added 2026-08-13 as a 3rd
+    # fallback once both Gemini and Groq were near/at their real free-tier
+    # caps the same day. Own rate limits per free model (not yet
+    # characterized live the way Gemini's/Groq's are — see
+    # gemini-free-tier-daily-cap.md's hard-won methodology lesson before
+    # assuming this one's headroom either).
+    openrouter_api_key: str = ""
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini
     # models for new API keys faster than this project's timeline (verified
     # live: gemini-2.5-flash-lite and gemini-2.5-flash both 404'd as "no

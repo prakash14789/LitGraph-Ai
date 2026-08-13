@@ -12,7 +12,9 @@ from src.utils.llm_client import _API_KEYS, _BASE_URLS, _KeyRing, _RateLimiter, 
 def test_every_provider_has_a_base_url_and_key_list():
     # Catches the easy typo: adding a provider to one dict and forgetting
     # the other (both are keyed by settings.llm_provider's Literal values).
-    assert set(_BASE_URLS) == set(_API_KEYS) == {"gemini", "openai", "anthropic", "groq"}
+    assert (
+        set(_BASE_URLS) == set(_API_KEYS) == {"gemini", "openai", "anthropic", "groq", "openrouter"}
+    )
 
 
 def _http_error(cls, status_code: int):

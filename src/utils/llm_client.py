@@ -27,11 +27,13 @@ _BASE_URLS = {
     "openai": None,  # SDK default
     "anthropic": "https://api.anthropic.com/v1/",
     "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
 }
 
 # Gemini and Groq get key lists (both measured hitting real free-tier daily
 # caps live — Gemini ~20 req/day, Groq ~100K tokens/day). openai/anthropic
-# stay single-key: paid keys don't hit the same wall.
+# stay single-key: paid keys don't hit the same wall. openrouter also
+# single-key for now (added 2026-08-13) — no 2nd key provided yet.
 _API_KEYS = {
     "gemini": [k for k in [settings.gemini_api_key, settings.gemini_api_key_fallback] if k],
     "openai": [settings.openai_api_key],
@@ -45,6 +47,7 @@ _API_KEYS = {
         ]
         if k
     ],
+    "openrouter": [settings.openrouter_api_key],
 }
 
 

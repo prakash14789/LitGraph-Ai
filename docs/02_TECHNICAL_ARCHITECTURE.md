@@ -697,20 +697,40 @@ litgraph/
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
 │       ├── llm_client.py            # Unified LLM client — Gemini (default)/OpenAI/Anthropic/
-│       │                            # Groq, all via the OpenAI SDK against each provider's
-│       │                            # OpenAI-compatible endpoint. Retry + rate limiting live
-│       │                            # here too (no separate rate_limiter.py — one small class,
-│       │                            # one caller, not worth its own file). _KeyRing (added
-│       │                            # 2026-08-13, same day EXTRACT-001 measured Gemini's free
-│       │                            # tier hitting a ~20-requests/day wall) walks forward
+│       │                            # Groq/OpenRouter, all via the OpenAI SDK against each
+│       │                            # provider's OpenAI-compatible endpoint. Retry + rate
+│       │                            # limiting live here too (no separate rate_limiter.py — one
+│       │                            # small class, one caller, not worth its own file). _KeyRing
+│       │                            # (added 2026-08-13, same day EXTRACT-001 measured Gemini's
+│       │                            # free tier hitting a ~20-requests/day wall) walks forward
 │       │                            # through a provider's key list on a 429 and never goes
 │       │                            # back — generic over any provider's key list, not
 │       │                            # Gemini-specific: Gemini and Groq both got a 2nd key the
 │       │                            # same day (Groq measured hitting its own 100K
-│       │                            # tokens/day cap during EXTRACT-002), openai/anthropic
-│       │                            # stay single-key. Switching provider entirely (e.g. to
-│       │                            # Groq once both Gemini keys are spent) is still manual —
-│       │                            # LLM_PROVIDER + a matching model name.
+│       │                            # tokens/day cap during EXTRACT-002), openai/anthropic stay
+│       │                            # single-key. OpenRouter (4th provider, added 2026-08-13
+│       │                            # once Gemini and Groq were both near/at their real caps the
+│       │                            # same day) is also single-key so far. Switching provider
+│       │                            # entirely (e.g. to Groq once both Gemini keys are spent) is
+│       │                            # still manual — LLM_PROVIDER + a matching model name; the
+│       │                            # OpenRouter switch is a live reminder of a real gap found
+│       │                            # doing this same thing for Groq earlier: llm_client passes
+│       │                            # `model` straight through with no check that it's actually
+│       │                            # valid for whichever provider LLM_PROVIDER currently
+│       │                            # selects — already bit GENERATION_MODEL/EXTRACTION_MODEL
+│       │                            # once (see routes/query.py's tree comment, RETRIEVAL-005).
+│       │                            # Model quality/speed tradeoff measured live on
+│       │                            # OpenRouter's free tier: openai/gpt-oss-20b:free produces
+│       │                            # correct output (a full real EXTRACT-005 pipeline run
+│       │                            # completed successfully on it — real Neo4j graph written)
+│       │                            # but is slow, 10-40s/call, ~181s for a full multi-section
+│       │                            # paper — over the pipeline's own 90s budget test; a faster
+│       │                            # nano model (nvidia/nemotron-nano-9b-v2:free, 6.6s) returned
+│       │                            # EMPTY content instead, not investigated further. Free
+│       │                            # OpenRouter model slugs rotate in/out — query GET
+│       │                            # https://openrouter.ai/api/v1/models and filter for ids
+│       │                            # ending ":free" rather than guessing (two guessed llama
+│       │                            # slugs 404'd live as "no longer free").
 │       ├── llm_json.py              # parse_json_response()/to_confidence() — pulled out of
 │       │                            # entity_extractor.py during EXTRACT-002 once
 │       │                            # relation_extractor.py needed the exact same "strip
@@ -1635,13 +1655,16 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic", "groq"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter"] = "gemini"
     gemini_api_key: str = ""
     gemini_api_key_fallback: str = ""  # auto-switched to by llm_client's key ring on 429
     groq_api_key: str = ""             # manual fallback provider — free, higher daily cap
     groq_api_key_fallback: str = ""    # 2nd Groq key, own key ring, same mechanism
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    openrouter_api_key: str = ""       # 4th provider, added 2026-08-13 — see llm_client.py's
+                                        # tree comment for the model speed/correctness tradeoffs
+                                        # measured live on its free tier
     extraction_model: str = "gemini-flash-latest"
     extraction_max_tokens: int = 4096
     extraction_temperature: float = 0.1
