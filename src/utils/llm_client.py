@@ -36,7 +36,15 @@ _API_KEYS = {
     "gemini": [k for k in [settings.gemini_api_key, settings.gemini_api_key_fallback] if k],
     "openai": [settings.openai_api_key],
     "anthropic": [settings.anthropic_api_key],
-    "groq": [k for k in [settings.groq_api_key, settings.groq_api_key_fallback] if k],
+    "groq": [
+        k
+        for k in [
+            settings.groq_api_key,
+            settings.groq_api_key_fallback,
+            settings.groq_api_key_fallback_2,
+        ]
+        if k
+    ],
 }
 
 

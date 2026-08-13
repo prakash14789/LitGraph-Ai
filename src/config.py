@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # Gemini switches to it automatically on a 429, no new logic needed
     # (the ring is generic over any provider's key list, not Gemini-specific).
     groq_api_key_fallback: str = ""
+    # Optional 3rd Groq key — added 2026-08-13 after both prior Groq keys
+    # hit the real 100K tokens/day cap in one session (EXTRACT-005/006
+    # live-testing). Same _KeyRing, no new code needed — just extends the
+    # list in llm_client.py's _API_KEYS["groq"].
+    groq_api_key_fallback_2: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini
