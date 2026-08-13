@@ -22,6 +22,7 @@ data/*
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/*.tsbuildinfo
 
 # Eval results (generated)
 tests/eval/eval_results/*

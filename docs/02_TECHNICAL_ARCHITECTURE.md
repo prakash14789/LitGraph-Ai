@@ -964,31 +964,90 @@ litgraph/
 │       ├── run_eval.py               # Run both systems, score, output comparison
 │       └── eval_results/             # Stored evaluation results
 │
-├── frontend/                        # React Frontend
+├── frontend/                        # React Frontend — scaffold built FE-001
+│   │                                 # (Vite + React 18 + TS, hand-written rather than the
+│   │                                 # interactive `npm create vite` wizard — more reliable in a
+│   │                                 # non-interactive shell and no functional difference).
+│   │                                 # `npm run dev` verified live (curl 200 on / and on Vite's
+│   │                                 # dev-transformed .tsx/.css endpoints — confirms Tailwind +
+│   │                                 # the shadcn/ui token pipeline actually processes our
+│   │                                 # classes, not just that the config files exist); `npm run
+│   │                                 # build`/`typecheck` also verified clean. `npm audit` flags
+│   │                                 # 4 moderate/high advisories (esbuild dev-server-only
+│   │                                 # request forgery, react-router open-redirect/SSR-hydration)
+│   │                                 # — both require either a breaking major bump (vite 5→8) or
+│   │                                 # don't apply to this app's usage (no SSR, no untrusted
+│   │                                 # redirect targets); left as a known, disclosed tradeoff
+│   │                                 # rather than forcing an untested major-version jump for a
+│   │                                 # local-only dev tool. hooks/ and stores/ (Zustand — package
+│   │                                 # installed per the ticket, no store files yet) stay empty:
+│   │                                 # no real page has a consumer for either until FE-002/FE-003
+│   │                                 # actually need one — YAGNI, not an oversight. No test
+│   │                                 # framework added either — FE-001 has no real branching
+│   │                                 # logic yet (declarative routes, a trivial cn() helper), and
+│   │                                 # `npm run dev`/`build`/`typecheck` already ran live as this
+│   │                                 # ticket's actual verification.
 │   ├── package.json
-│   ├── tsconfig.json
-│   ├── src/
-│   │   ├── App.tsx
-│   │   ├── pages/
-│   │   │   ├── ChatPage.tsx          # Main Q&A interface
-│   │   │   ├── GraphPage.tsx         # Graph visualization explorer
-│   │   │   ├── PapersPage.tsx        # Paper upload + management
-│   │   │   └── ComparePage.tsx       # GraphRAG vs vanilla RAG comparison
-│   │   ├── components/
-│   │   │   ├── ChatMessage.tsx
-│   │   │   ├── CitationCard.tsx
-│   │   │   ├── GraphCanvas.tsx       # Cytoscape.js wrapper
-│   │   │   ├── PaperUploader.tsx
-│   │   │   ├── SubgraphPanel.tsx     # Shows retrieved subgraph for current answer
-│   │   │   └── EntityDetailModal.tsx
-│   │   ├── hooks/
-│   │   │   ├── useQuery.ts
-│   │   │   └── useGraph.ts
-│   │   ├── services/
-│   │   │   └── api.ts                # Axios API client
-│   │   └── types/
-│   │       └── index.ts              # TypeScript type definitions
-│   └── public/
+│   ├── vite.config.ts                # dev server port 3000 (ticket's own acceptance criterion),
+│   │                                  # @/ alias -> src/
+│   ├── tsconfig.json                 # references app + node configs (standard Vite split, so
+│   │                                  # vite.config.ts's Node-only globals don't leak into
+│   │                                  # browser-side type-checking)
+│   ├── tsconfig.app.json
+│   ├── tsconfig.node.json
+│   ├── tailwind.config.js            # shadcn/ui's CSS-variable color tokens (values in
+│   │                                  # index.css) + entity-type colors (04_FRONTEND_
+│   │                                  # SPECIFICATION.md §3.1), ready for GRAPH-002/FE-004
+│   ├── postcss.config.js
+│   ├── components.json               # shadcn CLI config — lets `npx shadcn add <component>`
+│   │                                  # drop future components (Card, Dialog, Badge, ...) into
+│   │                                  # components/ui/ matching this project's aliases, without
+│   │                                  # hand-writing each one the way button.tsx was
+│   ├── index.html
+│   ├── .env.example                  # VITE_API_URL
+│   ├── public/
+│   │   └── favicon.svg
+│   └── src/
+│       ├── main.tsx                  # QueryClientProvider + BrowserRouter root
+│       ├── App.tsx                   # Route table (4 tabs + / -> /chat redirect), global
+│       │                              # layout shell (header + flex-1 main, per 04_FRONTEND_
+│       │                              # SPECIFICATION.md §4.1's "no outer scroll" rule)
+│       ├── index.css                 # Tailwind directives + shadcn light/dark CSS variables —
+│       │                              # primary set to the brand blue (#2563EB) rather than
+│       │                              # shadcn's near-black default, dark theme pre-wired so
+│       │                              # POLISH-003's toggle is just a class swap
+│       ├── vite-env.d.ts
+│       ├── lib/
+│       │   └── utils.ts              # cn() — shadcn's standard clsx+tailwind-merge helper
+│       ├── components/
+│       │   ├── Header.tsx            # Sticky nav (4 tabs, active-tab styling via NavLink).
+│       │   │                          # UserMenu/dark-mode toggle is a disabled placeholder
+│       │   │                          # button (real one lands POLISH-003) — kept disabled
+│       │   │                          # rather than omitted so it doesn't look like a live,
+│       │   │                          # working control that silently does nothing.
+│       │   └── ui/
+│       │       └── button.tsx        # First real shadcn/ui component — proves the pattern
+│       │                              # renders correctly (this ticket's own acceptance
+│       │                              # criterion); more added the same way as pages need them,
+│       │                              # not all pre-built now with no caller (Card/Dialog/Badge/
+│       │                              # etc. per 04_FRONTEND_SPECIFICATION.md §3.4)
+│       ├── pages/
+│       │   ├── ChatPage.tsx          # Placeholder — real chat UI lands FE-003
+│       │   ├── GraphPage.tsx         # Placeholder — real graph explorer lands GRAPH-002/003
+│       │   ├── PapersPage.tsx        # Placeholder — real upload/list UI lands FE-002
+│       │   └── ComparePage.tsx       # Placeholder — real side-by-side comparison lands COMPARE-001
+│       ├── services/
+│       │   └── api.ts                # Axios client, VITE_API_URL base (04_FRONTEND_
+│       │                              # SPECIFICATION.md §7.1 — no auth interceptors, MVP has no
+│       │                              # auth). Only wraps endpoints that exist today
+│       │                              # (RETRIEVAL-005/006, INGEST-004, papers list/detail/
+│       │                              # delete) — graph/collections calls land with their own
+│       │                              # tickets (GRAPH-001, POLISH-005) rather than being stubbed
+│       │                              # against routes that would just 404.
+│       └── types/
+│           └── index.ts              # Mirrors src/api/schemas/query.py and papers.py's
+│                                      # PaperListItem — kept to what api.ts actually consumes
+│                                      # today, extended per-field as later pages need more.
 │
 ├── scripts/
 │   ├── review_extraction.py          # Built EXTRACT-006 — `python -m scripts.review_extraction
