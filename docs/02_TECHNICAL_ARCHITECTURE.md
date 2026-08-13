@@ -430,7 +430,26 @@ litgraph/
 │   │   │
 │   │   ├── retrieval/               # Query → Retrieved Context
 │   │   │   ├── __init__.py
-│   │   │   ├── vector_retriever.py  # Query → top-K similar chunks (ChromaDB)
+│   │   │   ├── vector_retriever.py  # Built RETRIEVAL-001 — retrieve_seeds(query) embeds the
+│   │   │   │                        # query once and searches both Chroma collections: top-K
+│   │   │   │                        # entity_embeddings (EntitySeed — node_id is a Neo4j
+│   │   │   │                        # elementId, parsed straight off graph_writer.py's
+│   │   │   │                        # f"entity_{elementId}" Chroma id, no 2nd Neo4j round-trip
+│   │   │   │                        # needed) and top-K paper_chunks (ChunkSeed). paper_ids is
+│   │   │   │                        # the deduplicated union of chunk seeds' own paper_id and
+│   │   │   │                        # every entity seed's source_papers metadata — satisfies the
+│   │   │   │                        # ticket's "same paper in both results counts once"
+│   │   │   │                        # criterion without RETRIEVAL-002 having to do that
+│   │   │   │                        # bookkeeping itself. Empty graph -> chunks-only fallback
+│   │   │   │                        # needs no special-casing: Chroma's query() against an
+│   │   │   │                        # empty/no-match collection returns empty lists, not an
+│   │   │   │                        # error. Global search, not scoped by collection_id — the
+│   │   │   │                        # ticket's own "MVP scoping decision": neither chunk nor
+│   │   │   │                        # entity metadata carries collection_id, and entity
+│   │   │   │                        # resolution intentionally merges the same entity across
+│   │   │   │                        # every paper, so real per-collection scoping is deferred to
+│   │   │   │                        # POLISH-005. Live-verified against a real Chroma index (real
+│   │   │   │                        # embeddings, not mocked) finding a genuine semantic match.
 │   │   │   ├── graph_retriever.py   # Seed entities → N-hop subgraph (Neo4j Cypher)
 │   │   │   ├── hybrid_scorer.py     # Combine vector + graph scores → ranked results
 │   │   │   └── context_builder.py   # Subgraph → structured text context for LLM
@@ -608,9 +627,23 @@ litgraph/
 │   │   │                            # auto-merging. Real threshold calibration (see
 │   │   │                            # entity_resolver.py's tree comment) was done live against
 │   │   │                            # real embeddings/LLM calls, not re-run on every test pass.
+│   │   ├── test_vector_retriever.py # Built RETRIEVAL-001 — mocked query_similar (both
+│   │   │                            # collections), covers: combining entity+chunk seeds,
+│   │   │                            # empty-graph fallback to chunks-only, paper_ids dedup when
+│   │   │                            # the same paper appears via both an entity's source_papers
+│   │   │                            # and a chunk's own paper_id, fully-empty-corpus case.
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
+│   │   ├── __init__.py               # Added RETRIEVAL-001 (alongside tests/__init__.py and
+│   │   │                             # tests/unit/__init__.py) — pytest's default import mode
+│   │   │                             # can't tell apart two test files sharing a basename in
+│   │   │                             # different directories without one; hit live the moment
+│   │   │                             # this ticket added tests/unit/test_vector_retriever.py
+│   │   │                             # alongside tests/integration/test_vector_retriever.py
+│   │   │                             # ("import file mismatch" on collection). Making tests/ a
+│   │   │                             # real package fixes it for any future same-name pair too,
+│   │   │                             # not just this one.
 │   │   ├── conftest.py               # Built EXTRACT-004 — close_neo4j_driver_after_test fixture
 │   │   │                             # (see graph_writer.py's tree comment for the "different event
 │   │   │                             # loop" bug this fixes). Opt-in via
@@ -692,6 +725,12 @@ litgraph/
 │   │   │                             # printed correctly for a mocked extraction. Real live run
 │   │   │                             # also done separately (not in this file) against a real
 │   │   │                             # Groq call — see review_extraction.py's tree comment.
+│   │   ├── test_vector_retriever.py  # Built RETRIEVAL-001 — real ChromaDB + real local
+│   │   │                             # embedding model, no mocks: proves retrieve_seeds() finds
+│   │   │                             # a genuine semantic match (a hand-added "BERT" entity +
+│   │   │                             # chunk, queried with "What is BERT?") against a real HNSW
+│   │   │                             # index, not just that it parses a mocked Chroma response
+│   │   │                             # shape — that's what the unit test file covers.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
