@@ -23,7 +23,7 @@ from src.models.extraction_job import ExtractionJob
 from src.models.paper import IngestionStatus, Paper
 from src.vectorstore.store import add_texts, get_collection
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("close_neo4j_driver_after_test")]
 
 
 async def _create_paper(test_engine, pdf_path: str, **overrides) -> uuid.UUID:

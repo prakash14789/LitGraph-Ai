@@ -287,7 +287,59 @@ litgraph/
 │   │   │   │                        # an academic corpus not to slow down the common, safe
 │   │   │   │                        # case. Performance measured live: 16.8ms for steps 1-3
 │   │   │   │                        # (excluding the LLM call, per the ticket's own carve-out).
-│   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
+│   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j — built EXTRACT-004,
+│   │   │   │                        # the ticket every prior "candidate list stands in for a real
+│   │   │   │                        # Neo4j lookup" comment (INGEST-007, EXTRACT-002, EXTRACT-003)
+│   │   │   │                        # was waiting for. MERGE for nodes (idempotent — reprocessing
+│   │   │   │                        # a paper updates the same node, never duplicates it), CREATE
+│   │   │   │                        # for relationships (per the ticket; only entity/node
+│   │   │   │                        # idempotency is in the acceptance criteria, not relationship
+│   │   │   │                        # idempotency, so reprocessing can duplicate edges — a known,
+│   │   │   │                        # deliberately out-of-scope gap, not silently accepted).
+│   │   │   │                        #
+│   │   │   │                        # Two node families, matching what §4.2 gives each type:
+│   │   │   │                        # write_named_entity(label, resolution, paper_id) handles
+│   │   │   │                        # Method/Dataset/Author/Metric — anything entity_resolver.py
+│   │   │   │                        # resolved — MERGE-keyed on canonical_name (Method/Dataset) or
+│   │   │   │                        # name (Author/Metric), same key resolve_entity's own
+│   │   │   │                        # exact-match step already uses. Only Method/Dataset get an
+│   │   │   │                        # embedding + a Chroma entity_embeddings upsert — §4.2's node
+│   │   │   │                        # examples don't give Author/Metric an embedding field, and
+│   │   │   │                        # §4.3 explicitly scopes that collection to
+│   │   │   │                        # "method/dataset/claim". write_claim() is separate and NOT
+│   │   │   │                        # run through entity_resolver — a claim isn't a named,
+│   │   │   │                        # cross-paper-shared entity (§4.2 gives it a singular
+│   │   │   │                        # source_paper_id, not the shared source_papers list
+│   │   │   │                        # Method/Dataset get); deduped instead by a content hash of
+│   │   │   │                        # (paper_id, text). write_authors() MERGEs Author nodes
+│   │   │   │                        # straight from paper.authors and CREATEs the
+│   │   │   │                        # Paper-[:AUTHORED_BY]->Author edges with no LLM step — this is
+│   │   │   │                        # the module relation_extractor.py's own comment pointed to
+│   │   │   │                        # ("pdf_parser already parses paper.authors as structured
+│   │   │   │                        # data — nothing for an LLM to add").
+│   │   │   │                        #
+│   │   │   │                        # Chroma's entity_embeddings metadata tracks source_papers as
+│   │   │   │                        # a comma-joined string, not the list shown in §4.3's
+│   │   │   │                        # illustrative JSON — Chroma metadata values must be
+│   │   │   │                        # str/int/float/bool, no lists, discovered live writing this.
+│   │   │   │                        #
+│   │   │   │                        # Live-verified against real Neo4j + real Chroma containers
+│   │   │   │                        # (tests/integration/test_graph_writer.py), not mocked — the
+│   │   │   │                        # ticket's own acceptance criteria explicitly wants a direct
+│   │   │   │                        # Chroma query proving the embedding write, not just a Neo4j
+│   │   │   │                        # check. That live run surfaced a real, general bug: Neo4j's
+│   │   │   │                        # async driver pools connections tied to the event loop that
+│   │   │   │                        # created them, but pytest-anyio gives every test function its
+│   │   │   │                        # own loop — a connection pooled by one test crashed the next
+│   │   │   │                        # with "got Future attached to a different loop" once tests
+│   │   │   │                        # started hammering Neo4j back-to-back (test_papers_api.py's
+│   │   │   │                        # more spread-out Neo4j calls had happened not to trigger it —
+│   │   │   │                        # same latent bug, just not yet exposed). Fixed via
+│   │   │   │                        # tests/integration/conftest.py's close_neo4j_driver_after_test
+│   │   │   │                        # fixture, opted into (not autouse — test_embedding_storage.py
+│   │   │   │                        # in the same directory has sync, non-Neo4j tests an autouse
+│   │   │   │                        # async fixture would break) by the two files that actually
+│   │   │   │                        # call get_driver(): test_graph_writer.py, test_papers_api.py.
 │   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed — built INGEST-006.
 │   │   │                            # Entity/relation extraction (Epic 2) extends this later.
 │   │   │                            # On any step failure: marks job/paper FAILED with the error,
@@ -483,6 +535,17 @@ litgraph/
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
+│   │   ├── conftest.py               # Built EXTRACT-004 — close_neo4j_driver_after_test fixture
+│   │   │                             # (see graph_writer.py's tree comment for the "different event
+│   │   │                             # loop" bug this fixes). Opt-in via
+│   │   │                             # pytest.mark.usefixtures(...), NOT autouse — this directory
+│   │   │                             # also has test_embedding_storage.py, whose tests are sync and
+│   │   │                             # never touch Neo4j; an autouse *async* fixture requested by a
+│   │   │                             # *sync* test isn't handled by any pytest plugin and warns
+│   │   │                             # it'll be a hard error in pytest 9 (found live making it
+│   │   │                             # autouse first). Only test_graph_writer.py and
+│   │   │                             # test_papers_api.py opt in — the two files that actually call
+│   │   │                             # get_driver().
 │   │   ├── test_embedding_storage.py # Built INGEST-003 — talks to the real ChromaDB
 │   │   │                             # container, not a mock (that's the actual thing worth
 │   │   │                             # verifying: add/get(where=)/duplicate-skip against
@@ -517,6 +580,18 @@ litgraph/
 │   │   │                             # (no pipeline writes real ones yet), deletes one of two
 │   │   │                             # papers, and proves against real Neo4j that the shared
 │   │   │                             # Method survives while the paper-exclusive Claim is deleted.
+│   │   ├── test_graph_writer.py      # Built EXTRACT-004 — real Neo4j + real Chroma containers,
+│   │   │                             # no mocks (the ticket wants a direct Chroma query proving
+│   │   │                             # the embedding write, not just a Neo4j check). 6 tests:
+│   │   │                             # write_paper idempotency (reprocess updates, doesn't
+│   │   │                             # duplicate, and overwrites via SET n +=), write_named_entity
+│   │   │                             # merge-on-reprocess + Chroma upsert with accumulating
+│   │   │                             # source_papers, Author/Metric correctly getting neither
+│   │   │                             # embedding nor a Chroma row, write_claim content-hash dedup,
+│   │   │                             # write_authors' MERGE+AUTHORED_BY edges, and
+│   │   │                             # write_relationship's confidence/evidence_text properties.
+│   │   │                             # Surfaced a real, general bug — see graph_writer.py's tree
+│   │   │                             # comment and tests/integration/conftest.py.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
@@ -704,7 +779,9 @@ CREATE FULLTEXT INDEX method_search IF NOT EXISTS FOR (m:Method) ON EACH [m.cano
     "metadata": {
         "entity_type": "Method",
         "canonical_name": "BERT",
-        "source_papers": ["uuid1", "uuid2"]
+        "source_papers": "uuid1,uuid2"  # comma-joined string, not a list — Chroma metadata
+                                         # values must be str/int/float/bool (EXTRACT-004,
+                                         # graph_writer.py, found live)
     }
 }
 ```
