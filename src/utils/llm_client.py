@@ -26,16 +26,19 @@ _BASE_URLS = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "openai": None,  # SDK default
     "anthropic": "https://api.anthropic.com/v1/",
+    "groq": "https://api.groq.com/openai/v1",
 }
 
 # Only Gemini has a fallback key today — the free tier's daily quota (as low
 # as ~20 requests/model, measured live) is what makes this worth having.
-# openai/anthropic are single-key: paid keys don't hit the same wall, and
-# adding rotation for providers nobody's rate-limited on yet is speculative.
+# openai/anthropic/groq are single-key: paid keys don't hit the same wall,
+# and Groq's free daily cap (1000 RPD on llama-3.3-70b-versatile) is high
+# enough that a 2nd key isn't worth it yet.
 _API_KEYS = {
     "gemini": [k for k in [settings.gemini_api_key, settings.gemini_api_key_fallback] if k],
     "openai": [settings.openai_api_key],
     "anthropic": [settings.anthropic_api_key],
+    "groq": [settings.groq_api_key],
 }
 
 

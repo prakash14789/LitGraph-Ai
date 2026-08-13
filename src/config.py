@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq"] = "gemini"
     gemini_api_key: str = ""
     # Optional 2nd Gemini key — llm_client.py switches to it automatically
     # once gemini_api_key hits a 429 quota error. A free key's daily cap can
@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     # — far stricter than the RPM limit below, and not something backoff
     # retries fix (waiting a minute doesn't refill a daily quota).
     gemini_api_key_fallback: str = ""
+    # Free tier, no card, OpenAI-compatible endpoint — same shape as the
+    # other three providers, no new SDK needed. Meaningfully higher daily cap
+    # than Gemini's free tier (1000 RPD on llama-3.3-70b-versatile vs
+    # Gemini's measured ~20/day) — the fallback for when both Gemini keys
+    # are exhausted for the day. Flip LLM_PROVIDER=groq and set
+    # EXTRACTION_MODEL/GENERATION_MODEL to a Groq model name to use it.
+    groq_api_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini

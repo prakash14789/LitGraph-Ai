@@ -84,7 +84,7 @@ LitGraph is a **GraphRAG system** for academic literature. It ingests research p
 | **Primary Database** | PostgreSQL | Stores paper metadata, user data, sessions, extraction job status. Reliable, well-known, free |
 | **Knowledge Graph** | Neo4j (Community Edition) | Purpose-built for graph queries (Cypher). Handles relationship traversal natively. Free community edition sufficient for portfolio scale |
 | **Vector Store** | ChromaDB (MVP) → Qdrant (production) | ChromaDB: zero-config, embedded, fast to start. Qdrant: better performance at scale, filtering, production-grade |
-| **LLM API** | **Default (build phase): Gemini API free tier** (Flash-Lite for extraction, Flash/Pro for generation). **Scale option: OpenAI (GPT-4o-mini/GPT-4o) OR Anthropic (Haiku/Sonnet)** — swap via `LLM_PROVIDER` config, no code changes | Gemini free tier: no card, 1,500 RPD / 15 RPM / 1M TPM on Flash — enough to build + demo at zero cost. OpenAI/Anthropic wired in from day one so scaling later (higher quality, higher volume, no training-data usage) is a config flip, not a rebuild |
+| **LLM API** | **Default (build phase): Gemini API free tier**, with a 2nd Gemini key auto-switched to on quota exhaustion, and **Groq (free, OpenAI-compatible) as a manual fallback provider**. **Scale option: OpenAI (GPT-4o-mini/GPT-4o) OR Anthropic (Haiku/Sonnet)** — swap via `LLM_PROVIDER` config, no code changes | Gemini free tier: measured live (EXTRACT-001) at a much stricter ~20 requests/day/model than the generally-published 1,500 RPD figure — the 2nd key + Groq fallback exist because of that. Groq: no card, 1,000 RPD on `llama-3.3-70b-versatile`, live-verified working through the same unified client. OpenAI/Anthropic wired in from day one so scaling later (higher quality, higher volume, no training-data usage) is a config flip, not a rebuild |
 | **Embedding Model** | **Default: `all-MiniLM-L6-v2`** (local, sentence-transformers, free, no API call) — **Scale option: `text-embedding-3-small`** (OpenAI, better quality, costs money) | Local model = zero cost + zero rate limit during build. Swap to OpenAI embeddings later if retrieval quality needs a bump at scale |
 | **PDF Parsing** | **MVP: PyMuPDF (fitz) only.** GROBID considered but **not implemented** — no docker-compose service exists for it. Listed here as a documented future upgrade path, not a current dependency | PyMuPDF: fast, extracts text/tables/structure via heuristics, zero extra infra. GROBID would give academic-paper-aware parsing (cleaner section/reference extraction) but is a heavy Java service — add later only if PyMuPDF heuristics prove insufficient on real papers |
 | **Frontend** | React + TypeScript + Tailwind CSS | Standard modern stack. TypeScript catches bugs. Tailwind speeds up styling |
@@ -329,11 +329,18 @@ litgraph/
 │   │
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
-│       ├── llm_client.py            # Unified LLM client — Gemini (default)/OpenAI/Anthropic,
-│       │                            # all via the OpenAI SDK against each provider's
+│       ├── llm_client.py            # Unified LLM client — Gemini (default)/OpenAI/Anthropic/
+│       │                            # Groq, all via the OpenAI SDK against each provider's
 │       │                            # OpenAI-compatible endpoint. Retry + rate limiting live
 │       │                            # here too (no separate rate_limiter.py — one small class,
-│       │                            # one caller, not worth its own file).
+│       │                            # one caller, not worth its own file). _KeyRing (added
+│       │                            # 2026-08-13, same day EXTRACT-001 measured Gemini's free
+│       │                            # tier hitting a ~20-requests/day wall) walks forward
+│       │                            # through a provider's key list on a 429 and never goes
+│       │                            # back — Gemini gets 2 keys (auto-switched), openai/
+│       │                            # anthropic/groq stay single-key. Switching provider
+│       │                            # entirely (e.g. to Groq once both Gemini keys are spent)
+│       │                            # is still manual — LLM_PROVIDER + a matching model name.
 │       └── logging.py               # Structured logging setup
 │
 ├── tests/
@@ -940,11 +947,21 @@ CHROMA_COLLECTION_ENTITIES=entity_embeddings
 REDIS_URL=redis://localhost:6379/0
 
 # ─── LLM API ───
-# BUILD PHASE (default): gemini — free tier, no card, 1500 RPD/15 RPM on Flash
+# BUILD PHASE (default): gemini — free tier, no card. Measured live
+# (EXTRACT-001): a free key's actual daily cap can be as low as ~20
+# requests/model, well under the generally-published 1500 RPD figure.
+# GEMINI_API_KEY_FALLBACK is a 2nd key llm_client.py's key ring switches to
+# automatically on a 429; GROQ_API_KEY (added same day, after both Gemini
+# keys were spent) is a manual fallback provider — free, no card,
+# OpenAI-compatible, 1000 RPD on llama-3.3-70b-versatile — flip
+# LLM_PROVIDER=groq + point EXTRACTION_MODEL/GENERATION_MODEL at a Groq
+# model name when Gemini is out for the day. Live-verified working.
 # SCALE PHASE (later): flip to openai or anthropic — just change this one value,
 # rest of the pipeline code stays the same (unified llm_client abstracts provider)
-LLM_PROVIDER=gemini                    # gemini | openai | anthropic
+LLM_PROVIDER=gemini                    # gemini | openai | anthropic | groq
 GEMINI_API_KEY=AIza...
+GEMINI_API_KEY_FALLBACK=AIza...        # optional 2nd key, auto-switched to on 429
+GROQ_API_KEY=gsk_...                   # get from https://console.groq.com/keys
 OPENAI_API_KEY=sk-...                  # keep unset/blank until scaling
 ANTHROPIC_API_KEY=sk-ant-...           # keep unset/blank until scaling
 
@@ -1062,8 +1079,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq"] = "gemini"
     gemini_api_key: str = ""
+    gemini_api_key_fallback: str = ""  # auto-switched to by llm_client's key ring on 429
+    groq_api_key: str = ""             # manual fallback provider — free, higher daily cap
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     extraction_model: str = "gemini-flash-latest"
