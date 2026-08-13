@@ -450,7 +450,31 @@ litgraph/
 │   │   │   │                        # every paper, so real per-collection scoping is deferred to
 │   │   │   │                        # POLISH-005. Live-verified against a real Chroma index (real
 │   │   │   │                        # embeddings, not mocked) finding a genuine semantic match.
-│   │   │   ├── graph_retriever.py   # Seed entities → N-hop subgraph (Neo4j Cypher)
+│   │   │   ├── graph_retriever.py   # Built RETRIEVAL-002 — retrieve_subgraph(seeds, hops,
+│   │   │                        # relationship_types, entity_types, max_nodes). Entity seeds'
+│   │   │                        # node_id is already a Neo4j elementId (used directly);
+│   │   │                        # SeedResult.paper_ids are Postgres paper_id strings, resolved to
+│   │   │                        # their Paper node's elementId with one extra lookup so both seed
+│   │   │                        # kinds land in the same elementId space the traversal query
+│   │   │                        # uses. One Cypher query does the N-hop expansion
+│   │   │                        # (`-[rel:TYPE1|TYPE2*1..hops]-`, hops clamped 1-4) and orders
+│   │   │                        # rows by edge confidence descending — same can't-parameterize-a-
+│   │   │                        # label reason queries.py's own docstring gives, safe here
+│   │   │                        # because relationship_types is checked against
+│   │   │                        # _KNOWN_REL_TYPES (the fixed set graph_writer.py/pipeline.py
+│   │   │                        # ever actually write) before it's interpolated. entity_types
+│   │   │                        # filters newly-discovered nodes only, in Python — seeds always
+│   │   │                        # survive it, they were already judged relevant by
+│   │   │                        # RETRIEVAL-001. The 200-node cap is then applied greedily over
+│   │   │                        # that pre-sorted row list: keep an edge if both endpoints
+│   │   │                        # already fit or are already in, skip otherwise —
+│   │   │                        # "highest-confidence edges first" without a second Cypher round-
+│   │   │                        # trip. A requested relationship_types filter with no valid
+│   │   │                        # entries short-circuits to an empty subgraph rather than
+│   │   │                        # silently matching everything. Live-verified with 6 tests
+│   │   │                        # against real Neo4j: 2-hop traversal, paper_id seed
+│   │   │                        # resolution, type filtering, unknown-type short-circuit,
+│   │   │                        # confidence-ordered node capping, empty-seed fallback.
 │   │   │   ├── hybrid_scorer.py     # Combine vector + graph scores → ranked results
 │   │   │   └── context_builder.py   # Subgraph → structured text context for LLM
 │   │   │
@@ -731,6 +755,16 @@ litgraph/
 │   │   │                             # chunk, queried with "What is BERT?") against a real HNSW
 │   │   │                             # index, not just that it parses a mocked Chroma response
 │   │   │                             # shape — that's what the unit test file covers.
+│   │   ├── test_graph_retriever.py   # Built RETRIEVAL-002 — real Neo4j, no mocks. Graph built
+│   │   │                             # directly via Cypher (not graph_writer.py — this suite is
+│   │   │                             # about traversal/filtering/capping, not write-idempotency).
+│   │   │                             # 6 tests: 2-hop traversal reaches nodes at both hop
+│   │   │                             # distances, paper_id seed resolves to the Paper node's
+│   │   │                             # elementId, relationship_types keeps only matching edges,
+│   │   │                             # an unknown relationship_types entry returns empty rather
+│   │   │                             # than silently matching everything, max_nodes keeps the
+│   │   │                             # highest-confidence edges first, empty seeds short-circuit
+│   │   │                             # without a Neo4j round-trip.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
