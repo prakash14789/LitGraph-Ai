@@ -683,6 +683,15 @@ litgraph/
 │   │   │                             # write_relationship's confidence/evidence_text properties.
 │   │   │                             # Surfaced a real, general bug — see graph_writer.py's tree
 │   │   │                             # comment and tests/integration/conftest.py.
+│   │   ├── test_review_extraction.py # Built EXTRACT-006 — real Postgres + real Neo4j (candidate
+│   │   │                             # fetch has no quota cost), mocked LLM: a formatting/wiring
+│   │   │                             # check, not a prompt-quality one — the script itself is the
+│   │   │                             # tool for that, meant to be run manually against real LLM
+│   │   │                             # calls. 3 tests: missing paper, unparsed paper (no
+│   │   │                             # sections), and entities/relations/resolution-decisions all
+│   │   │                             # printed correctly for a mocked extraction. Real live run
+│   │   │                             # also done separately (not in this file) against a real
+│   │   │                             # Groq call — see review_extraction.py's tree comment.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
@@ -717,6 +726,29 @@ litgraph/
 │   └── public/
 │
 ├── scripts/
+│   ├── review_extraction.py          # Built EXTRACT-006 — `python -m scripts.review_extraction
+│   │                                  # <paper_id>`. Developer tool, not user-facing: re-runs
+│   │                                  # entity extraction -> relation extraction -> entity
+│   │                                  # resolution for an already-parsed paper (paper.sections
+│   │                                  # populated) and prints a human-readable, color-coded
+│   │                                  # review (green >=0.8, yellow 0.5-0.8, red <0.5 confidence)
+│   │                                  # of every entity/relation/resolution decision — used to
+│   │                                  # iterate on prompt wording without a real ingest each
+│   │                                  # time. Never writes to Neo4j/Chroma: reuses
+│   │                                  # extract_entities/extract_intra_paper_relations/
+│   │                                  # extract_cross_paper_relations/resolve_entity/
+│   │                                  # fetch_candidate_entities exactly as pipeline.py
+│   │                                  # (EXTRACT-005) does, so "what this script shows" and
+│   │                                  # "what a real ingest would decide" can't drift apart —
+│   │                                  # just skips the graph_writer.write_* calls, a deliberate
+│   │                                  # dry run, verified live (no graph_writer.* log lines, zero
+│   │                                  # Neo4j writes confirmed by direct query after a real run
+│   │                                  # against real Groq calls). REPORTS_RESULT relations print
+│   │                                  # with their relation_extractor-derived target text here
+│   │                                  # (unlike pipeline.py, which synthesizes that edge directly
+│   │                                  # from entity_extractor's claims instead) — this script is
+│   │                                  # a read-only report, not a graph write, so there's no
+│   │                                  # target-node-identity problem to work around.
 │   ├── seed_sample_papers.py         # Download + ingest sample paper set for demos
 │   ├── export_graph.py               # Export Neo4j graph to JSON
 │   └── run_eval.sh                   # Full evaluation pipeline script
