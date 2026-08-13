@@ -159,9 +159,27 @@ litgraph/
 │   │   │   │                        # vector_similarity/graph_distance/avg_edge_confidence, for
 │   │   │   │                        # future frontend use — GRAPH-viz epic). retrieval_stats
 │   │   │   │                        # covers the ticket's own "vector results, graph nodes, final
-│   │   │   │                        # context size" ask plus latency_ms. POST /query/compare
-│   │   │   │                        # (graphrag-vs-vanilla) lands with RETRIEVAL-006, not built
-│   │   │   │                        # yet.
+│   │   │   │                        # context size" ask plus latency_ms. POST /query/compare —
+│   │   │   │                        # built RETRIEVAL-006: runs query_graphrag and query_vanilla
+│   │   │   │                        # concurrently via asyncio.gather(), each given its own
+│   │   │   │                        # AsyncSession (SQLAlchemy's isn't safe shared across
+│   │   │   │                        # concurrent tasks, and both are called directly as plain
+│   │   │   │                        # async functions here, not through FastAPI's own routing,
+│   │   │   │                        # so there's no Depends(get_db) session to share anyway).
+│   │   │   │                        # Real concurrency required a small fix to both existing
+│   │   │   │                        # routes: llm_client.complete() is a blocking sync call, and
+│   │   │   │                        # calling it straight from an `async def` (as both routes did
+│   │   │   │                        # before this ticket) blocks the whole event loop for the
+│   │   │   │                        # call's duration — invisible with one request in flight, but
+│   │   │   │                        # would have serialized the two LLM calls back-to-back under
+│   │   │   │                        # asyncio.gather(), failing the ticket's own "latency =
+│   │   │   │                        # max(graphrag, vanilla), not the sum" criterion. Fixed by
+│   │   │   │                        # wrapping just the LLM-call sites in `asyncio.to_thread` (the
+│   │   │   │                        # dominant cost — seconds, vs tens of ms for embed()/
+│   │   │   │                        # query_similar()/DB calls, so only that call needed it).
+│   │   │   │                        # Verified live in the test: a mocked LLM made to sleep 0.3s
+│   │   │   │                        # measures ~0.48s wall-clock total for both pipelines
+│   │   │   │                        # together, not ~0.6s+ serial.
 │   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id} — built
 │   │   │   │                        # INGEST-007. Ticket depends on EXTRACT-004 (graph writer),
@@ -176,7 +194,10 @@ litgraph/
 │   │   │   ├── query.py             # VanillaQueryRequest/Response, SourceChunk — built INGEST-005.
 │   │   │   │                        # QueryRequest/Response, Citation, RetrievedSubgraphSchema
 │   │   │   │                        # (SubgraphNodeSchema/SubgraphEdgeSchema), RetrievalStats —
-│   │   │   │                        # built RETRIEVAL-005 for POST /query.
+│   │   │   │                        # built RETRIEVAL-005 for POST /query. CompareQueryRequest/
+│   │   │   │                        # Response — built RETRIEVAL-006 for POST /query/compare
+│   │   │   │                        # (wraps one QueryResponse + one VanillaQueryResponse plus
+│   │   │   │                        # total_latency_ms, no new fields of their own needed).
 │   │   │   ├── graph.py
 │   │   │   └── papers.py            # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
 │   │   │                            # built INGEST-007
@@ -908,6 +929,14 @@ litgraph/
 │   │   │                             # passing run; rewritten to match test_graph_writer.py/
 │   │   │                             # test_graph_retriever.py's own inline try/finally pattern,
 │   │   │                             # which sidesteps the ordering question entirely.
+│   │   ├── test_query_compare_api.py # Built RETRIEVAL-006 — real HTTP request, real Postgres/
+│   │   │                             # ChromaDB, mocked LLM. The one thing worth proving for real
+│   │   │                             # (a shape-only check wouldn't catch it): the mocked LLM call
+│   │   │                             # is made to sleep 0.3s, and wall-clock time for the whole
+│   │   │                             # /query/compare request is asserted between 0.9x and 1.8x
+│   │   │                             # that single sleep — proves the two pipelines' LLM calls
+│   │   │                             # actually overlap (measured ~0.48s) rather than serializing
+│   │   │                             # (would measure ~0.6s+ real DB/Chroma overhead on each side).
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/

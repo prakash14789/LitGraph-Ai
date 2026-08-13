@@ -73,3 +73,17 @@ class QueryResponse(BaseModel):
     citations: list[Citation]
     retrieved_subgraph: RetrievedSubgraphSchema
     retrieval_stats: RetrievalStats
+
+
+class CompareQueryRequest(BaseModel):
+    query: str
+    top_k: int | None = None  # graphrag ranked-node top_k
+    hops: int | None = None  # graphrag traversal depth
+    vanilla_top_k: int | None = None  # vanilla chunk top_k
+
+
+class CompareQueryResponse(BaseModel):
+    graphrag: QueryResponse
+    vanilla: VanillaQueryResponse
+    total_latency_ms: int  # ~= max(graphrag.retrieval_stats.latency_ms, vanilla.latency_ms)
+    # + small overhead, since both pipelines run concurrently via asyncio.gather

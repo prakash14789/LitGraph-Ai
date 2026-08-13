@@ -2,11 +2,24 @@
 POST /query — the GraphRAG endpoint (RETRIEVAL-005), built on top of the
 retrieve_seeds -> retrieve_subgraph -> score_subgraph -> build_context chain
 RETRIEVAL-001 through -004 already built.
+POST /query/compare — built RETRIEVAL-006, runs both of the above for the
+same query and returns them side by side.
 
-POST /query/compare (GraphRAG vs vanilla, side by side) lands with
-RETRIEVAL-006 — not built yet.
+Both query_graphrag and query_vanilla call their LLM generator through
+`asyncio.to_thread` rather than directly — llm_client.complete() is a
+blocking sync call (the OpenAI SDK's sync client), and calling it straight
+from an `async def` blocks the whole event loop for the call's full
+duration. That was invisible with one request in flight at a time, but
+/query/compare runs both pipelines concurrently via asyncio.gather(), and
+without to_thread the two LLM calls (each the dominant cost, seconds vs
+tens of ms for the rest of the pipeline) would just serialize back-to-back
+on the same thread — silently failing the ticket's own "latency =
+max(graphrag_time, vanilla_time), not the sum" acceptance criterion. Only
+the LLM call is wrapped, not the faster embed()/query_similar() calls —
+those are fast enough that the extra thread-hop isn't worth it.
 """
 
+import asyncio
 import time
 import uuid
 
@@ -17,6 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies import get_db
 from src.api.schemas.query import (
     Citation,
+    CompareQueryRequest,
+    CompareQueryResponse,
     QueryRequest,
     QueryResponse,
     RetrievalStats,
@@ -27,6 +42,7 @@ from src.api.schemas.query import (
     VanillaQueryRequest,
     VanillaQueryResponse,
 )
+from src.db import AsyncSessionLocal
 from src.models.paper import Paper
 from src.services.generation.generator import generate_answer as generate_graphrag_answer
 from src.services.retrieval.context_builder import build_context
@@ -39,6 +55,31 @@ from src.services.vanilla_rag.retriever import retrieve
 router = APIRouter()
 
 
+@router.post("/query/compare", response_model=CompareQueryResponse)
+async def query_compare(request: CompareQueryRequest) -> CompareQueryResponse:
+    """Each pipeline gets its own AsyncSession — SQLAlchemy's AsyncSession
+    isn't safe for concurrent use from two tasks at once, and query_graphrag/
+    query_vanilla are called directly as plain async functions here (not
+    through FastAPI's routing), so a single Depends(get_db) session isn't
+    available or appropriate anyway."""
+    start = time.monotonic()
+    async with AsyncSessionLocal() as graphrag_db, AsyncSessionLocal() as vanilla_db:
+        graphrag_result, vanilla_result = await asyncio.gather(
+            query_graphrag(
+                QueryRequest(query=request.query, top_k=request.top_k, hops=request.hops),
+                graphrag_db,
+            ),
+            query_vanilla(
+                VanillaQueryRequest(query=request.query, top_k=request.vanilla_top_k), vanilla_db
+            ),
+        )
+    return CompareQueryResponse(
+        graphrag=graphrag_result,
+        vanilla=vanilla_result,
+        total_latency_ms=int((time.monotonic() - start) * 1000),
+    )
+
+
 @router.post("/query", response_model=QueryResponse)
 async def query_graphrag(
     request: QueryRequest, db: AsyncSession = Depends(get_db)
@@ -49,7 +90,7 @@ async def query_graphrag(
     subgraph = await retrieve_subgraph(seeds, hops=request.hops)
     ranked = score_subgraph(subgraph, seeds, top_k=request.top_k)
     context = build_context(ranked, seeds)
-    answer = generate_graphrag_answer(request.query, context)
+    answer = await asyncio.to_thread(generate_graphrag_answer, request.query, context)
     citations = await _build_citations(db, ranked, seeds)
 
     return QueryResponse(
@@ -126,7 +167,7 @@ async def query_vanilla(
     start = time.monotonic()
 
     chunks = retrieve(request.query, top_k=request.top_k)
-    answer = generate_answer(request.query, chunks)
+    answer = await asyncio.to_thread(generate_answer, request.query, chunks)
     titles = await _paper_titles(db, {c.paper_id for c in chunks})
 
     sources = [
