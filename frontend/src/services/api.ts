@@ -2,6 +2,8 @@ import axios from "axios";
 
 import type {
   CompareQueryResponse,
+  EntityDetailResponse,
+  GraphOverview,
   GraphSubgraphResponse,
   Paper,
   PaperDetail,
@@ -40,9 +42,8 @@ export interface JobStatus {
 }
 
 // Only wraps endpoints that exist today (RETRIEVAL-005/006, INGEST-004/007,
-// GRAPH-001's subgraph/search — overview/entity added once GRAPH-003 needs
-// them). Collections CRUD (POLISH-005) isn't built yet — added once that
-// ticket lands, not stubbed against routes that would just 404.
+// GRAPH-001). Collections CRUD (POLISH-005) isn't built yet — added once
+// that ticket lands, not stubbed against routes that would just 404.
 export const litgraphApi = {
   // Query — no collection_id param. Per RETRIEVAL-001's MVP scoping
   // decision, retrieval is global across all ingested papers, not filtered
@@ -69,8 +70,12 @@ export const litgraphApi = {
   deletePaper: (id: string) => api.delete(`/papers/${id}`),
 
   // Graph
-  getSubgraph: (entityId: string, hops = 2) =>
+  getGraphOverview: () => api.get<GraphOverview>("/graph/overview"),
+  // entityId omitted -> backend returns a capped whole-graph snapshot
+  // (GRAPH-003's "full graph loads on page visit").
+  getSubgraph: (entityId?: string, hops = 2) =>
     api.get<GraphSubgraphResponse>("/graph/subgraph", { params: { entity_id: entityId, hops } }),
+  getEntity: (id: string) => api.get<EntityDetailResponse>(`/graph/entity/${id}`),
   searchEntities: (q: string, type?: string) =>
     api.get<SearchResponse>("/graph/search", { params: { q, type } }),
 };

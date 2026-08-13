@@ -1,5 +1,5 @@
 import cytoscape, { type Core, type EdgeSingular, type NodeSingular } from "cytoscape";
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 import {
   type CanvasNode,
@@ -23,25 +23,50 @@ export type { CanvasNode } from "@/lib/graphElements";
 // instance — see graphElements.check.ts.
 
 const DOUBLE_TAP_MS = 300;
+const PULSE_INTERVAL_MS = 450;
 
-export function GraphCanvas({
-  nodes,
-  edges,
-  onNodeSelect,
-  className,
-  compact = false,
-  highlightIds,
-}: {
-  nodes: CanvasNode[];
-  edges: SubgraphEdge[];
-  onNodeSelect?: (node: CanvasNode) => void;
-  className?: string;
-  compact?: boolean; // GRAPH-004's mini panel: smaller nodes, no edge labels
-  highlightIds?: string[]; // GRAPH-004's "View full graph" hand-off: pre-highlight these on load
-}) {
+// GRAPH-003's layout switcher — all three ship with cytoscape core, no
+// extra layout plugin. "hierarchy" maps to breadthfirst (cytoscape has no
+// layout literally named "hierarchy").
+export type GraphLayoutName = "cose" | "breadthfirst" | "grid";
+
+export interface GraphCanvasHandle {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  fit: () => void;
+}
+
+export const GraphCanvas = forwardRef<
+  GraphCanvasHandle,
+  {
+    nodes: CanvasNode[];
+    edges: SubgraphEdge[];
+    onNodeSelect?: (node: CanvasNode) => void;
+    onDeselect?: () => void;
+    className?: string;
+    compact?: boolean; // GRAPH-004's mini panel: smaller nodes, no edge labels
+    highlightIds?: string[]; // GRAPH-004's "View full graph" hand-off: pre-highlight these on load
+    layout?: GraphLayoutName; // GRAPH-003's layout switcher, default "cose" (force-directed)
+    pulseIds?: string[]; // GRAPH-003's text search: these nodes visually pulse until cleared
+  }
+>(function GraphCanvas(
+  {
+    nodes,
+    edges,
+    onNodeSelect,
+    onDeselect,
+    className,
+    compact = false,
+    highlightIds,
+    layout = "cose",
+    pulseIds,
+  },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const hasLaidOutRef = useRef(false);
+  const hasMountedLayoutPropRef = useRef(false);
   const lastTapRef = useRef<{ id: string; time: number } | null>(null);
   // Read fresh in the layout effect without being a reactive dependency —
   // only applied once, on the very first layout, not on every re-render.
@@ -52,6 +77,12 @@ export function GraphCanvas({
     edges,
   });
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    zoomIn: () => cyRef.current?.zoom(cyRef.current.zoom() * 1.25),
+    zoomOut: () => cyRef.current?.zoom(cyRef.current.zoom() / 1.25),
+    fit: () => cyRef.current?.fit(undefined, 30),
+  }));
 
   // New props reset any nodes pulled in by a prior expand-on-double-click —
   // the caller gave us a fresh base graph (new answer, new search), don't
@@ -117,6 +148,18 @@ export function GraphCanvas({
           selector: ".highlighted",
           style: { "line-color": "#111827", "target-arrow-color": "#111827", width: 3 },
         },
+        {
+          // GRAPH-003 text search — a static "pulse-on" look toggled by JS
+          // (see the pulseIds effect below), not a CSS @keyframes animation:
+          // cytoscape renders to <canvas>, not DOM, so there's no element to
+          // attach a CSS animation to.
+          selector: ".pulse-on",
+          style: { "border-width": 4, "border-color": "#F59E0B", "border-opacity": 1 },
+        },
+        {
+          selector: ".pulse-off",
+          style: { "border-width": 4, "border-color": "#F59E0B", "border-opacity": 0.25 },
+        },
       ],
       layout: { name: "preset" }, // real layout run explicitly below, once elements exist
       wheelSensitivity: 0.2,
@@ -149,6 +192,7 @@ export function GraphCanvas({
         cy.elements().unselect();
         cy.edges().removeClass("highlighted");
         setTooltip(null);
+        onDeselect?.();
       }
     });
 
@@ -207,22 +251,22 @@ export function GraphCanvas({
   }, []);
 
   // Sync cytoscape's elements whenever the display set changes (initial
-  // load or an expand). randomize:false on repeat layouts keeps already-
-  // placed nodes roughly put instead of re-scrambling the whole graph
-  // every time one node's neighborhood is expanded.
+  // load or an expand). randomize/fit only on the very first layout, so an
+  // expand grows the existing layout instead of re-scrambling it.
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     const isFirstLayout = !hasLaidOutRef.current;
     cy.json({ elements: toElements(display.nodes, display.edges, compact) });
     cy.layout({
-      name: "cose",
+      name: layout,
       animate: true,
       animationDuration: 400,
       randomize: isFirstLayout,
       fit: isFirstLayout,
     }).run();
     hasLaidOutRef.current = true;
+    hasMountedLayoutPropRef.current = true;
 
     // GRAPH-004: a subgraph handed off via "View full graph" arrives
     // highlighted, not just present — only on the very first layout, so
@@ -236,7 +280,45 @@ export function GraphCanvas({
         .filter((e) => ids.has(e.source().id()) && ids.has(e.target().id()))
         .addClass("highlighted");
     }
+    // `layout` deliberately excluded — a pure layout-name change is handled
+    // by the effect below, without re-fetching/re-fitting elements.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [display, compact]);
+
+  // GRAPH-003's layout switcher: re-run layout in place when only the name
+  // changes (elements already loaded) — skips its own first run, since the
+  // elements-sync effect above already laid out with whatever `layout` was
+  // at mount time.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !hasMountedLayoutPropRef.current) return;
+    cy.layout({ name: layout, animate: true, animationDuration: 400, fit: true }).run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
+
+  // GRAPH-003's search pulse — a JS-driven class toggle (canvas has no CSS
+  // animations to hook), cleared whenever the match set changes or empties.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.nodes().removeClass("pulse-on pulse-off");
+    if (!pulseIds?.length) return;
+
+    const ids = new Set(pulseIds);
+    const targets = cy.nodes().filter((n) => ids.has(n.id()));
+    let on = false;
+    const tick = () => {
+      on = !on;
+      targets.removeClass(on ? "pulse-off" : "pulse-on").addClass(on ? "pulse-on" : "pulse-off");
+    };
+    tick();
+    const interval = setInterval(tick, PULSE_INTERVAL_MS);
+    return () => {
+      clearInterval(interval);
+      targets.removeClass("pulse-on pulse-off");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pulseIds]);
 
   return (
     <div className={className ?? "relative h-full w-full"}>
@@ -254,4 +336,4 @@ export function GraphCanvas({
       )}
     </div>
   );
-}
+});

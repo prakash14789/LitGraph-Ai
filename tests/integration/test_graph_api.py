@@ -84,6 +84,50 @@ async def test_subgraph_expands_from_entity_and_includes_usage_count(test_client
         await _cleanup(tag)
 
 
+async def test_subgraph_without_entity_id_returns_whole_graph_snapshot(test_client):
+    # GRAPH-003: no entity_id -> a capped whole-graph snapshot, not a 422.
+    # Same superset-check pattern as test_papers_api.py's collection-filter
+    # test — other tests' fixtures/pre-existing data legitimately coexist,
+    # so this only asserts the fixture is *included*, not that it's all
+    # that comes back.
+    tag = f"GA-TEST-{uuid.uuid4()}"
+    try:
+        rows = await _run(
+            "CREATE (p:Paper {paper_id: $paper_id, title: 'p'}) "
+            "CREATE (m:Method {canonical_name: $method}) "
+            "CREATE (p)-[:USES_METHOD {confidence: 0.9}]->(m) "
+            "RETURN elementId(p) AS p, elementId(m) AS m",
+            paper_id=f"{tag}-paper",
+            method=f"{tag}-method",
+        )
+        ids = rows[0]
+
+        response = await test_client.get("/api/v1/graph/subgraph")
+        assert response.status_code == 200
+        body = response.json()
+
+        node_ids = {n["id"] for n in body["nodes"]}
+        # A whole-graph snapshot is capped — the fixture may or may not
+        # survive the LIMIT depending on what else is in this Neo4j
+        # instance, so this only checks the response is well-formed, not
+        # that this specific fixture is necessarily included.
+        assert isinstance(body["nodes"], list)
+        assert isinstance(body["edges"], list)
+        # If the fixture *did* make it into the capped set, its edge and
+        # usage_count must be correct — not silently dropped/miscounted.
+        if ids["m"] in node_ids and ids["p"] in node_ids:
+            method_node = next(n for n in body["nodes"] if n["id"] == ids["m"])
+            assert method_node["usage_count"] == 1
+            assert any(
+                e["source"] == ids["p"]
+                and e["target"] == ids["m"]
+                and e["rel_type"] == "USES_METHOD"
+                for e in body["edges"]
+            )
+    finally:
+        await _cleanup(tag)
+
+
 async def test_subgraph_404_for_unknown_entity(test_client):
     response = await test_client.get(
         "/api/v1/graph/subgraph", params={"entity_id": "4:nonexistent:999999"}

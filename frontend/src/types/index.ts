@@ -137,3 +137,20 @@ export interface SearchResultItem {
 export interface SearchResponse {
   results: SearchResultItem[];
 }
+
+export interface RelatedEntity {
+  rel_type: string;
+  direction: "outgoing" | "incoming";
+  id: string;
+  labels: string[];
+  name: string | null;
+  properties: Record<string, unknown>;
+}
+
+export interface EntityDetailResponse {
+  id: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+  usage_count: number | null;
+  relationships: RelatedEntity[];
+}

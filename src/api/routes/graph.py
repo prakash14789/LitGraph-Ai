@@ -19,11 +19,19 @@ from src.graph.queries import (
     ENTITY_BY_ID,
     ENTITY_RELATIONSHIPS,
     NODE_COUNTS_BY_LABEL,
+    WHOLE_GRAPH_EDGES,
+    WHOLE_GRAPH_NODES,
 )
-from src.services.retrieval.graph_retriever import GraphNode, retrieve_subgraph
+from src.services.retrieval.graph_retriever import retrieve_subgraph
 from src.services.retrieval.vector_retriever import EntitySeed, SeedResult
 
 router = APIRouter()
+
+# GRAPH-003: "full graph loads on page visit" cap — conservative relative to
+# GRAPH-002's own "no overlap up to 200 / smooth up to 500" targets, since a
+# whole-graph snapshot (no relevance ranking to trim by) is the one path
+# most likely to actually hit the ceiling in practice.
+_MAX_FULL_GRAPH_NODES = 150
 
 # Fulltext index per searchable label (src/graph/schema.py) — Metric has
 # none, same scope trim as usage_count's node-sizing (04_FRONTEND_
@@ -79,43 +87,100 @@ async def graph_overview() -> GraphOverview:
 
 @router.get("/graph/subgraph", response_model=GraphSubgraphResponse)
 async def graph_subgraph(
-    entity_id: str = Query(..., description="Neo4j elementId to expand from"),
+    entity_id: str | None = Query(
+        None, description="Neo4j elementId to expand from; omit for a capped whole-graph snapshot"
+    ),
     hops: int = Query(2, ge=1, le=4),
 ) -> GraphSubgraphResponse:
-    # Reuses RETRIEVAL-002's traversal/capping instead of a second
-    # implementation — a single-entity seed is exactly retrieve_subgraph's
-    # existing EntitySeed shape, entity_type/canonical_name/score unused by
-    # its own seed-resolution path (only node_id is read).
-    seeds = SeedResult(
-        entities=[EntitySeed(node_id=entity_id, entity_type="", canonical_name="", score=1.0)],
-        chunks=[],
-        paper_ids=[],
-    )
-    subgraph = await retrieve_subgraph(seeds, hops=hops)
-    if not subgraph.nodes:
-        # Also hits for a real entity with zero relationships (a state the
-        # write path never actually produces — every entity gets at least
-        # one edge back to the paper that introduced it) — not worth a
-        # second existence-check query for a case that shouldn't occur.
-        raise HTTPException(404, "entity not found")
+    if entity_id is None:
+        # GRAPH-003: "full graph loads on page visit" — the Explorer's
+        # default view, no seed entity to expand from.
+        node_rows, edge_rows = await _whole_graph_rows()
+    else:
+        # Reuses RETRIEVAL-002's traversal/capping instead of a second
+        # implementation — a single-entity seed is exactly retrieve_subgraph's
+        # existing EntitySeed shape, entity_type/canonical_name/score unused
+        # by its own seed-resolution path (only node_id is read).
+        seeds = SeedResult(
+            entities=[EntitySeed(node_id=entity_id, entity_type="", canonical_name="", score=1.0)],
+            chunks=[],
+            paper_ids=[],
+        )
+        subgraph = await retrieve_subgraph(seeds, hops=hops)
+        if not subgraph.nodes:
+            # Also hits for a real entity with zero relationships (a state
+            # the write path never actually produces — every entity gets at
+            # least one edge back to the paper that introduced it) — not
+            # worth a second existence-check query for a case that
+            # shouldn't occur.
+            raise HTTPException(404, "entity not found")
+        node_rows = [
+            {"id": n.node_id, "labels": n.labels, "properties": n.properties}
+            for n in subgraph.nodes
+        ]
+        edge_rows = [
+            {
+                "a_id": e.source_id,
+                "b_id": e.target_id,
+                "rel_type": e.rel_type,
+                "rel_props": e.properties,
+            }
+            for e in subgraph.edges
+        ]
 
-    counts = await _usage_counts(subgraph.nodes)
+    by_label: dict[str, list[str]] = {}
+    for row in node_rows:
+        by_label.setdefault(row["labels"][0], []).append(row["id"])
+    counts = await _usage_counts(by_label)
+
     nodes = [
         GraphNodeSchema(
-            id=n.node_id,
-            labels=n.labels,
-            properties=n.properties,
-            usage_count=counts.get(n.node_id),
+            id=row["id"],
+            labels=row["labels"],
+            properties=row["properties"],
+            usage_count=counts.get(row["id"]),
         )
-        for n in subgraph.nodes
+        for row in node_rows
     ]
     edges = [
         SubgraphEdgeSchema(
-            source=e.source_id, target=e.target_id, rel_type=e.rel_type, properties=e.properties
+            source=row["a_id"],
+            target=row["b_id"],
+            rel_type=row["rel_type"],
+            properties=row["rel_props"],
         )
-        for e in subgraph.edges
+        for row in edge_rows
     ]
     return GraphSubgraphResponse(nodes=nodes, edges=edges)
+
+
+async def _whole_graph_rows() -> tuple[list[dict], list[dict]]:
+    driver = get_driver()
+    async with driver.session() as session:
+        node_result = await session.run(WHOLE_GRAPH_NODES, limit=_MAX_FULL_GRAPH_NODES)
+        node_rows_raw = [r async for r in node_result]
+        ids = [r["id"] for r in node_rows_raw]
+        edge_result = await session.run(WHOLE_GRAPH_EDGES, ids=ids)
+        edge_rows_raw = [r async for r in edge_result]
+
+    node_rows = [
+        {
+            "id": r["id"],
+            "labels": r["labels"],
+            "properties": {k: v for k, v in dict(r["properties"]).items() if k != "embedding"},
+        }
+        for r in node_rows_raw
+    ]
+    edge_rows = [
+        {
+            "a_id": r["a_id"],
+            "b_id": r["b_id"],
+            "rel_type": r["rel_type"],
+            "rel_props": dict(r["rel_props"]),
+        }
+        for r in edge_rows_raw
+    ]
+    return node_rows, edge_rows
 
 
 @router.get("/graph/entity/{entity_id}", response_model=EntityDetailResponse)
@@ -200,15 +265,14 @@ async def graph_search(
     return SearchResponse(results=results[:limit])
 
 
-async def _usage_counts(nodes: list[GraphNode]) -> dict[str, int]:
-    by_label: dict[str, list[str]] = {}
-    for n in nodes:
-        by_label.setdefault(n.labels[0], []).append(n.node_id)
-
+# Takes pre-grouped {label: [ids]} rather than a list of node objects —
+# GRAPH-003's whole-graph path has raw Cypher rows, not graph_retriever's
+# GraphNode dataclass, so grouping is the call site's job, not this one's.
+async def _usage_counts(ids_by_label: dict[str, list[str]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     driver = get_driver()
     async with driver.session() as session:
-        for label, ids in by_label.items():
+        for label, ids in ids_by_label.items():
             query = _USAGE_COUNT_QUERY_BY_LABEL.get(label)
             if not query:
                 continue

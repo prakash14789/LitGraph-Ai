@@ -192,6 +192,13 @@ litgraph/
 │   │   │   │                        # come from real USES_METHOD/EVALUATES_ON/AUTHORED_BY counts.
 │   │   │   │                        # /graph/search added 3 new fulltext indexes (schema.py) for
 │   │   │   │                        # Dataset/Author/Claim — only Paper/Method had one before.
+│   │   │   │                        # GRAPH-003: entity_id on /graph/subgraph is now optional —
+│   │   │   │                        # omitted, it returns a capped (150-node) whole-graph snapshot
+│   │   │   │                        # (WHOLE_GRAPH_NODES/EDGES in queries.py) for the Explorer
+│   │   │   │                        # page's "full graph loads on visit" AC, which no endpoint
+│   │   │   │                        # covered before. `_usage_counts` reworked to take pre-grouped
+│   │   │   │                        # {label: [ids]} instead of a list of GraphNode objects, since
+│   │   │   │                        # this path has raw Cypher rows, not graph_retriever's dataclass.
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id} — built
 │   │   │   │                        # INGEST-007. Once EXTRACT-004 (graph writer) landed, detail's
 │   │   │   │                        # entities/relationships lists reflect the real graph — FE-002's
@@ -977,7 +984,15 @@ litgraph/
 │   │                                   # subgraph 404 for an unknown entity_id, entity detail
 │   │                                   # returns its relationships + usage_count with direction,
 │   │                                   # entity 404, fulltext search finds a tagged fixture and
-│   │                                   # respects the type filter, unknown type -> 400.
+│   │                                   # respects the type filter, unknown type -> 400. GRAPH-003
+│   │                                   # added an 8th: subgraph with no entity_id returns 200 (not
+│   │                                   # a 422) with a well-formed whole-graph snapshot; asserts the
+│   │                                   # fixture's usage_count/edge are correct *if* it survived the
+│   │                                   # cap — this Neo4j instance is shared across tests/sessions,
+│   │                                   # not reset per test, so a strict "the fixture is definitely
+│   │                                   # in the result" assertion isn't reliable in general (it did
+│   │                                   # verifiably run the strong assertions here: only 14 nodes
+│   │                                   # existed in this Neo4j at the time, well under the cap).
 │   └── eval/
 │       ├── eval_dataset.json         # 50 multi-hop questions with gold answers
 │       ├── run_eval.py               # Run both systems, score, output comparison
@@ -1062,13 +1077,27 @@ litgraph/
 │       │   │                          # selector here would either do nothing or misleadingly
 │       │   │                          # imply filtering; add once POLISH-005b lands per-
 │       │   │                          # collection retrieval.
-│       │   ├── GraphPage.tsx         # GRAPH-002: search box + GraphCanvas — a minimal real
-│       │   │                          # consumer proving the canvas actually works end to end,
-│       │   │                          # not the full toolbar/filters/legend/entity-sidebar page
-│       │   │                          # (that's GRAPH-003's separate 2-day scope). GRAPH-004:
-│       │   │                          # also reads ?entity_id=&highlight= (ContextPanel's "View
-│       │   │                          # full graph" hand-off) on mount to auto-load without
-│       │   │                          # re-typing the search that got the user here.
+│       │   ├── GraphPage.tsx         # GRAPH-003: full Graph Explorer. Full graph loads on visit
+│       │   │                          # (GET /graph/subgraph with no entity_id — the whole-graph
+│       │   │                          # snapshot this ticket added to that endpoint); arriving via
+│       │   │                          # GRAPH-004's ?entity_id=&highlight= hand-off loads that
+│       │   │                          # specific subgraph, highlighted, instead. Entity-type and
+│       │   │                          # relationship-type filter chips are dynamic (derived from
+│       │   │                          # whatever's actually loaded, not a hardcoded list — no
+│       │   │                          # point offering a CITES/CONTRADICTS filter chip for types
+│       │   │                          # that never occur in real data) and purely client-side
+│       │   │                          # (hide/show already-loaded elements, no re-fetch). Text
+│       │   │                          # search likewise highlights-with-pulse within the loaded
+│       │   │                          # set, not a fresh backend query — GET /graph/search already
+│       │   │                          # covers "find something not currently on screen" and isn't
+│       │   │                          # what this AC asks for. Collection selector intentionally
+│       │   │                          # omitted (same MVP scoping reasoning as FE-003's chat one)
+│       │   │                          # — GRAPH-001's endpoints take no collection_id, so there's
+│       │   │                          # no partial version of per-collection *graph* filtering to
+│       │   │                          # gesture at yet. Legend and entity-detail sidebar are
+│       │   │                          # page-local JSX, not extracted shared components — only
+│       │   │                          # this one consumer so far, extracting now would be
+│       │   │                          # premature.
 │       │   ├── PapersPage.tsx        # FE-002: native drag-and-drop upload zone (no react-
 │       │   │                          # dropzone — HTML5 DnD events cover the AC), paper list
 │       │   │                          # polling GET /papers (not the per-job status endpoint —
@@ -1130,7 +1159,20 @@ litgraph/
 │       │   │                          # sqrt-scaling formula, tighter base/clamp, not a separate
 │       │   │                          # size scheme) and `highlightIds` (pre-selects + highlights
 │       │   │                          # a node set on the very first layout only, so panning/
-│       │   │                          # expanding afterward doesn't keep re-selecting it).
+│       │   │                          # expanding afterward doesn't keep re-selecting it). GRAPH-003
+│       │   │                          # added: `layout` prop (cose/breadthfirst/grid — all ship
+│       │   │                          # with cytoscape core, "hierarchy" maps to breadthfirst since
+│       │   │                          # cytoscape has no layout literally named that; changing it
+│       │   │                          # re-runs layout in place via a separate effect that skips
+│       │   │                          # its own first run, since the elements-sync effect already
+│       │   │                          # laid out with whatever `layout` was at mount time);
+│       │   │                          # `pulseIds` (search-match highlighting — a JS setInterval
+│       │   │                          # class toggle, not CSS @keyframes, since cytoscape renders
+│       │   │                          # to <canvas>, not DOM, so there's no element to attach a CSS
+│       │   │                          # animation to); `onDeselect` (fires from the existing
+│       │   │                          # background-tap handler); and a `forwardRef`+
+│       │   │                          # `useImperativeHandle` exposing `zoomIn`/`zoomOut`/`fit` for
+│       │   │                          # the Explorer toolbar's zoom buttons.
 │       │   ├── ContextPanel.tsx      # FE-004: sources list + color-coded entity tags for the
 │       │   │                          # latest answer. One `collapsed` boolean drives both a
 │       │   │                          # lg+ sidebar (narrows to an icon strip) and a <lg bottom
@@ -2018,7 +2060,7 @@ volumes:
 | Method | Endpoint | Description |
 |--------|---------|-------------|
 | `GET` | `/api/v1/graph/overview` | Graph stats: total nodes, edges, entity type counts. |
-| `GET` | `/api/v1/graph/subgraph?entity_id={id}&hops={n}` | Get N-hop subgraph from an entity. For visualization. |
+| `GET` | `/api/v1/graph/subgraph?entity_id={id}&hops={n}` | Get N-hop subgraph from an entity (entity_id optional — omitted returns a capped whole-graph snapshot, GRAPH-003). For visualization. |
 | `GET` | `/api/v1/graph/entity/{id}` | Full entity details + all connected relationships. |
 | `GET` | `/api/v1/graph/search?q={text}&type={entity_type}` | Search entities by text + optional type filter. |
 
@@ -2030,7 +2072,9 @@ fulltext index, same scope trim as its missing `usage_count`). `/subgraph`
 and `/entity/{id}` both return a `usage_count: int | null` per node — see
 `src/api/schemas/graph.py`'s docstring for exactly what it measures per
 type, notably that Paper's is a relationship-degree proxy since no `CITES`
-edge is ever written.
+edge is ever written. **GRAPH-003:** `entity_id` is optional — omitted,
+`/subgraph` returns a capped (150-node) whole-graph snapshot instead of a
+404, used by the Graph Explorer page's default view.
 
 ### 7.4 Papers
 

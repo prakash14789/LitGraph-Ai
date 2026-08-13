@@ -52,6 +52,17 @@ RETURN collect(id) AS orphaned_ids
 NODE_COUNTS_BY_LABEL = "MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count"
 EDGE_COUNTS_BY_TYPE = "MATCH ()-[r]->() RETURN type(r) AS rel_type, count(r) AS count"
 
+# GRAPH-003 — GET /graph/subgraph with no entity_id: a capped whole-graph
+# snapshot for "full graph loads on page visit". Two queries, not one
+# OPTIONAL MATCH: same reasoning as ENTITY_RELATIONSHIPS below — edges are
+# fetched only among the already-capped node set (directed match, so each
+# relationship is naturally returned once, no DISTINCT needed).
+WHOLE_GRAPH_NODES = "MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties LIMIT $limit"
+WHOLE_GRAPH_EDGES = (
+    "MATCH (a)-[r]->(b) WHERE elementId(a) IN $ids AND elementId(b) IN $ids "
+    "RETURN elementId(a) AS a_id, elementId(b) AS b_id, type(r) AS rel_type, properties(r) AS rel_props"
+)
+
 # GRAPH-001 — GET /graph/entity/{id}. Two queries instead of one OPTIONAL
 # MATCH: collect()-ing a map built from a possibly-null r/m (OPTIONAL MATCH
 # with no match) still produces one bogus all-null entry, so a plain MATCH
