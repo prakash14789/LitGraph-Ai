@@ -67,11 +67,15 @@ class Settings(BaseSettings):
     gemini_api_key_fallback: str = ""
     # Free tier, no card, OpenAI-compatible endpoint — same shape as the
     # other three providers, no new SDK needed. Meaningfully higher daily cap
-    # than Gemini's free tier (1000 RPD on llama-3.3-70b-versatile vs
-    # Gemini's measured ~20/day) — the fallback for when both Gemini keys
-    # are exhausted for the day. Flip LLM_PROVIDER=groq and set
+    # than Gemini's free tier (100K tokens/day on llama-3.3-70b-versatile vs
+    # Gemini's measured ~20 requests/day) — the fallback for when both
+    # Gemini keys are exhausted for the day. Flip LLM_PROVIDER=groq and set
     # EXTRACTION_MODEL/GENERATION_MODEL to a Groq model name to use it.
     groq_api_key: str = ""
+    # Optional 2nd Groq key — same _KeyRing llm_client.py already built for
+    # Gemini switches to it automatically on a 429, no new logic needed
+    # (the ring is generic over any provider's key list, not Gemini-specific).
+    groq_api_key_fallback: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini

@@ -372,10 +372,13 @@ litgraph/
 │       │                            # 2026-08-13, same day EXTRACT-001 measured Gemini's free
 │       │                            # tier hitting a ~20-requests/day wall) walks forward
 │       │                            # through a provider's key list on a 429 and never goes
-│       │                            # back — Gemini gets 2 keys (auto-switched), openai/
-│       │                            # anthropic/groq stay single-key. Switching provider
-│       │                            # entirely (e.g. to Groq once both Gemini keys are spent)
-│       │                            # is still manual — LLM_PROVIDER + a matching model name.
+│       │                            # back — generic over any provider's key list, not
+│       │                            # Gemini-specific: Gemini and Groq both got a 2nd key the
+│       │                            # same day (Groq measured hitting its own 100K
+│       │                            # tokens/day cap during EXTRACT-002), openai/anthropic
+│       │                            # stay single-key. Switching provider entirely (e.g. to
+│       │                            # Groq once both Gemini keys are spent) is still manual —
+│       │                            # LLM_PROVIDER + a matching model name.
 │       ├── llm_json.py              # parse_json_response()/to_confidence() — pulled out of
 │       │                            # entity_extractor.py during EXTRACT-002 once
 │       │                            # relation_extractor.py needed the exact same "strip
@@ -1001,17 +1004,22 @@ REDIS_URL=redis://localhost:6379/0
 # (EXTRACT-001): a free key's actual daily cap can be as low as ~20
 # requests/model, well under the generally-published 1500 RPD figure.
 # GEMINI_API_KEY_FALLBACK is a 2nd key llm_client.py's key ring switches to
-# automatically on a 429; GROQ_API_KEY (added same day, after both Gemini
+# automatically on a 429. GROQ_API_KEY (added same day, after both Gemini
 # keys were spent) is a manual fallback provider — free, no card,
-# OpenAI-compatible, 1000 RPD on llama-3.3-70b-versatile — flip
-# LLM_PROVIDER=groq + point EXTRACTION_MODEL/GENERATION_MODEL at a Groq
-# model name when Gemini is out for the day. Live-verified working.
+# OpenAI-compatible, 100K tokens/day on llama-3.3-70b-versatile (on a
+# shorter rolling window than Gemini's calendar-day reset — recovers in
+# ~20min, not next-day) — flip LLM_PROVIDER=groq + point
+# EXTRACTION_MODEL/GENERATION_MODEL at a Groq model name when Gemini is out
+# for the day. GROQ_API_KEY_FALLBACK gets its own key ring the same way
+# Gemini does (the ring is generic over any provider's key list). Both
+# Groq keys live-verified working independently.
 # SCALE PHASE (later): flip to openai or anthropic — just change this one value,
 # rest of the pipeline code stays the same (unified llm_client abstracts provider)
 LLM_PROVIDER=gemini                    # gemini | openai | anthropic | groq
 GEMINI_API_KEY=AIza...
 GEMINI_API_KEY_FALLBACK=AIza...        # optional 2nd key, auto-switched to on 429
 GROQ_API_KEY=gsk_...                   # get from https://console.groq.com/keys
+GROQ_API_KEY_FALLBACK=gsk_...          # optional 2nd key, auto-switched to on 429
 OPENAI_API_KEY=sk-...                  # keep unset/blank until scaling
 ANTHROPIC_API_KEY=sk-ant-...           # keep unset/blank until scaling
 
@@ -1133,6 +1141,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_api_key_fallback: str = ""  # auto-switched to by llm_client's key ring on 429
     groq_api_key: str = ""             # manual fallback provider — free, higher daily cap
+    groq_api_key_fallback: str = ""    # 2nd Groq key, own key ring, same mechanism
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     extraction_model: str = "gemini-flash-latest"
