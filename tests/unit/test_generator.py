@@ -17,9 +17,10 @@ def test_generate_answer_calls_llm_with_context(mock_llm_client):
         )
     ]
 
-    answer = generate_answer("What are widgets?", chunks)
+    result = generate_answer("What are widgets?", chunks)
 
-    assert answer == "Widgets are useful. [1]"
+    assert result.text == "Widgets are useful. [1]"
+    assert result.context_tokens > 0
     mock_llm_client.assert_called_once()
     _, kwargs = mock_llm_client.call_args
     assert "Widgets are useful tools." in kwargs["user_prompt"]
@@ -27,6 +28,7 @@ def test_generate_answer_calls_llm_with_context(mock_llm_client):
 
 
 def test_generate_answer_no_chunks_skips_llm(mock_llm_client):
-    answer = generate_answer("anything", [])
-    assert "No relevant content" in answer
+    result = generate_answer("anything", [])
+    assert "No relevant content" in result.text
+    assert result.context_tokens == 0
     mock_llm_client.assert_not_called()

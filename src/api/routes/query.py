@@ -167,7 +167,7 @@ async def query_vanilla(
     start = time.monotonic()
 
     chunks = retrieve(request.query, top_k=request.top_k)
-    answer = await asyncio.to_thread(generate_answer, request.query, chunks)
+    generated = await asyncio.to_thread(generate_answer, request.query, chunks)
     titles = await _paper_titles(db, {c.paper_id for c in chunks})
 
     sources = [
@@ -183,9 +183,10 @@ async def query_vanilla(
     ]
 
     return VanillaQueryResponse(
-        answer=answer,
+        answer=generated.text,
         sources=sources,
         latency_ms=int((time.monotonic() - start) * 1000),
+        context_tokens=generated.context_tokens,
     )
 
 

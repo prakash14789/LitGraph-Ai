@@ -22,6 +22,9 @@ class VanillaQueryResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]  # index+1 matches the [n] citations in `answer`
     latency_ms: int
+    context_tokens: int  # COMPARE-001 — same cl100k_base count QueryResponse's
+    # retrieval_stats.context_tokens uses, so the two systems' stats are
+    # actually comparable on the Compare page, not vanilla missing the field
 
 
 class QueryRequest(BaseModel):

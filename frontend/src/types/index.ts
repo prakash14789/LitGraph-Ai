@@ -61,6 +61,7 @@ export interface VanillaQueryResponse {
   answer: string;
   sources: SourceChunk[];
   latency_ms: number;
+  context_tokens: number; // COMPARE-001 — matches QueryResponse's retrieval_stats.context_tokens
 }
 
 export interface CompareQueryResponse {

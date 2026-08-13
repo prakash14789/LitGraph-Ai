@@ -214,6 +214,10 @@ litgraph/
 │   │   │   │                        # Response — built RETRIEVAL-006 for POST /query/compare
 │   │   │   │                        # (wraps one QueryResponse + one VanillaQueryResponse plus
 │   │   │   │                        # total_latency_ms, no new fields of their own needed).
+│   │   │   │                        # COMPARE-001 added `context_tokens: int` to
+│   │   │   │                        # VanillaQueryResponse — it had no token stat at all before,
+│   │   │   │                        # a real gap against the Compare page's own "token count"
+│   │   │   │                        # acceptance criterion, not something to quietly work around.
 │   │   │   ├── graph.py             # GraphOverview, GraphNodeSchema (reuses query.py's
 │   │   │   │                        # SubgraphEdgeSchema for edges rather than a duplicate),
 │   │   │   │                        # EntityDetailResponse, SearchResponse — built GRAPH-001
@@ -636,7 +640,12 @@ litgraph/
 │   │   │   └── generator.py         # Chunks -> context -> llm_client.complete() -> cited answer.
 │   │   │                            # paper_id -> title resolution needs a DB session, so it's
 │   │   │                            # done by the route layer, not here — keeps this module
-│   │   │                            # DB-free like retriever.py/store.py.
+│   │   │                            # DB-free like retriever.py/store.py. COMPARE-001: returns a
+│   │   │                            # GeneratedAnswer(text, context_tokens) dataclass instead of a
+│   │   │                            # bare string — the Compare page needs a token count on the
+│   │   │                            # vanilla side too, to actually be comparable against
+│   │   │                            # QueryResponse's retrieval_stats.context_tokens. Same
+│   │   │                            # cl100k_base tiktoken encoding context_builder.py already uses.
 │   │   │
 │   │   └── papers/                  # Paper lifecycle logic outside ingestion — built INGEST-007
 │   │       ├── __init__.py
@@ -777,7 +786,12 @@ litgraph/
 │   │   ├── test_chunker.py          # Built INGEST-002 — hand-built ParsedPaper fixtures,
 │   │   │                            # tiny monkeypatched token limits to force multi-chunk cases
 │   │   ├── test_retriever.py        # Built INGEST-005 — mocked Chroma response
-│   │   ├── test_generator.py        # Built INGEST-005 — mock_llm_client fixture
+│   │   ├── test_generator.py        # Built INGEST-005 — mock_llm_client fixture. COMPARE-001:
+│   │   │                            # generate_answer returns a GeneratedAnswer(text,
+│   │   │                            # context_tokens) dataclass now, not a bare string — updated
+│   │   │                            # both assertions to `.text` and added a context_tokens check
+│   │   │                            # (>0 for the real-chunks case, ==0 for the no-chunks
+│   │   │                            # short-circuit).
 │   │   ├── test_embedder.py         # Built INGEST-005 — warm_up()'s provider branching only
 │   │   ├── test_entity_extractor.py # Built EXTRACT-001 — mocked LLM (mock_llm_client), covers
 │   │   │                            # JSON parsing (plain/fenced/prose-wrapped), confidence-
@@ -898,6 +912,9 @@ litgraph/
 │   │   │                             # separately (not in this file — needs a running worker +
 │   │   │                             # real Gemini key) that a real end-to-end query answers
 │   │   │                             # coherently with citations in ~2.5-4.5s once warmed up.
+│   │   │                             # COMPARE-001 added a context_tokens > 0 assertion. Also
+│   │   │                             # live-verified separately against a real running backend —
+│   │   │                             # a real /query/vanilla call returned "context_tokens":5044.
 │   │   ├── test_papers_api.py        # Built INGEST-007 — real HTTP requests against the real
 │   │   │                             # FastAPI app + test Postgres + real ChromaDB + real Neo4j.
 │   │   │                             # Covers list/filter-by-collection, detail (sections present,
@@ -975,6 +992,13 @@ litgraph/
 │   │   │                             # that single sleep — proves the two pipelines' LLM calls
 │   │   │                             # actually overlap (measured ~0.48s) rather than serializing
 │   │   │                             # (would measure ~0.6s+ real DB/Chroma overhead on each side).
+│   │   │                             # Known fragility (found during COMPARE-001, not caused by
+│   │   │                             # it): coverage instrumentation's per-line tracing overhead
+│   │   │                             # can itself push wall-clock time past the 1.8x threshold
+│   │   │                             # under load — reproducibly passed 3/3 with `--no-cov`, failed
+│   │   │                             # 2/2 with coverage on, on the same otherwise-unchanged code.
+│   │   │                             # If this test flakes, re-run with `--no-cov` before assuming
+│   │   │                             # a real regression.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_api.py          # Built GRAPH-001 — real HTTP requests, real Neo4j, hand-
 │   │                                   # built Cypher fixtures (same pattern as
@@ -1107,7 +1131,16 @@ litgraph/
 │       │   │                          # ("coming soon") — POST /ingest/arxiv is POLISH-004's
 │       │   │                          # scope and doesn't exist yet, so the ticket's own ArXiv
 │       │   │                          # AC is deliberately deferred rather than faked.
-│       │   └── ComparePage.tsx       # Placeholder — real side-by-side comparison lands COMPARE-001
+│       │   └── ComparePage.tsx       # COMPARE-001: single-shot comparison (not a chat history —
+│       │                              # one query in, both answers out), display-only over
+│       │                              # litgraphApi.compareQuery (RETRIEVAL-006's POST /query/
+│       │                              # compare, which already runs both pipelines concurrently
+│       │                              # server-side). Side-by-side on lg+, a tab switcher on
+│       │                              # mobile (both panels stay mounted — CSS `hidden`/`block` per
+│       │                              # active tab, not conditional rendering — so switching tabs
+│       │                              # doesn't need a second GraphCanvas mount). GraphRAG's panel
+│       │                              # reuses a `compact` GraphCanvas for the subgraph, same as
+│       │                              # FE-004's mini panel.
 │       ├── store/
 │       │   └── chatStore.ts          # FE-003: Zustand store, owns the send/retry API-call
 │       │                              # logic (not just state) so ChatPage stays a dumb view.

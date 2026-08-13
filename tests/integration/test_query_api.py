@@ -66,3 +66,4 @@ async def test_vanilla_query_returns_answer_with_sources(test_client, mock_llm_c
     assert len(body["sources"]) >= 1
     assert body["sources"][0]["paper_title"] == "Widget Theory Paper"
     assert body["latency_ms"] >= 0
+    assert body["context_tokens"] > 0
