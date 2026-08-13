@@ -68,7 +68,11 @@ export interface CompareQueryResponse {
   graphrag: QueryResponse;
   vanilla: VanillaQueryResponse;
   total_latency_ms: number;
+  query_log_id: string; // COMPARE-002 — vote target for POST /query/compare/{id}/vote
 }
+
+// Mirrors src/models/query_log.py's CompareVerdict (COMPARE-002).
+export type CompareVerdict = "vanilla" | "graphrag" | "tie_good" | "tie_bad";
 
 export type IngestionStatus = "pending" | "processing" | "completed" | "failed";
 

@@ -4,6 +4,8 @@ retrieve_seeds -> retrieve_subgraph -> score_subgraph -> build_context chain
 RETRIEVAL-001 through -004 already built.
 POST /query/compare — built RETRIEVAL-006, runs both of the above for the
 same query and returns them side by side.
+POST /query/compare/{query_log_id}/vote — COMPARE-002, records which of the
+two compared answers the user thought was better.
 
 Both query_graphrag and query_vanilla call their LLM generator through
 `asyncio.to_thread` rather than directly — llm_client.complete() is a
@@ -23,7 +25,7 @@ import asyncio
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,7 @@ from src.api.schemas.query import (
     Citation,
     CompareQueryRequest,
     CompareQueryResponse,
+    CompareVoteRequest,
     QueryRequest,
     QueryResponse,
     RetrievalStats,
@@ -44,6 +47,8 @@ from src.api.schemas.query import (
 )
 from src.db import AsyncSessionLocal
 from src.models.paper import Paper
+from src.models.query_log import QueryLog
+from src.repositories import query_log_repository
 from src.services.generation.generator import generate_answer as generate_graphrag_answer
 from src.services.retrieval.context_builder import build_context
 from src.services.retrieval.graph_retriever import retrieve_subgraph
@@ -56,12 +61,16 @@ router = APIRouter()
 
 
 @router.post("/query/compare", response_model=CompareQueryResponse)
-async def query_compare(request: CompareQueryRequest) -> CompareQueryResponse:
+async def query_compare(
+    request: CompareQueryRequest, db: AsyncSession = Depends(get_db)
+) -> CompareQueryResponse:
     """Each pipeline gets its own AsyncSession — SQLAlchemy's AsyncSession
     isn't safe for concurrent use from two tasks at once, and query_graphrag/
     query_vanilla are called directly as plain async functions here (not
     through FastAPI's routing), so a single Depends(get_db) session isn't
-    available or appropriate anyway."""
+    available or appropriate anyway. The `db` session here is only used
+    afterward, to persist the query_log row COMPARE-002's vote endpoint
+    attaches to."""
     start = time.monotonic()
     async with AsyncSessionLocal() as graphrag_db, AsyncSessionLocal() as vanilla_db:
         graphrag_result, vanilla_result = await asyncio.gather(
@@ -73,11 +82,43 @@ async def query_compare(request: CompareQueryRequest) -> CompareQueryResponse:
                 VanillaQueryRequest(query=request.query, top_k=request.vanilla_top_k), vanilla_db
             ),
         )
+    total_latency_ms = int((time.monotonic() - start) * 1000)
+
+    # Not query_log_repository.create() — its session.refresh() is a second
+    # DB round-trip only needed for server-generated columns. `id` here is a
+    # client-side uuid4 default, already set on the instance after flush(),
+    # so skipping refresh halves the latency this persistence step adds to
+    # the response (mattered enough to trip this file's own parallelism
+    # timing test — see test_compare_runs_both_pipelines_in_parallel).
+    log = QueryLog(
+        query_text=request.query,
+        graphrag_answer=graphrag_result.answer,
+        vanilla_answer=vanilla_result.answer,
+        latency_ms=total_latency_ms,
+    )
+    db.add(log)
+    await db.flush()
+
     return CompareQueryResponse(
         graphrag=graphrag_result,
         vanilla=vanilla_result,
-        total_latency_ms=int((time.monotonic() - start) * 1000),
+        total_latency_ms=total_latency_ms,
+        query_log_id=str(log.id),
     )
+
+
+@router.post("/query/compare/{query_log_id}/vote", status_code=204)
+async def vote_compare(
+    query_log_id: uuid.UUID, request: CompareVoteRequest, db: AsyncSession = Depends(get_db)
+) -> None:
+    """COMPARE-002. A plain UPDATE, not append-only — re-voting on the same
+    query_log_id just overwrites the previous verdict, which is what "user
+    can change vote within session" means: the frontend re-POSTs on click,
+    there's no separate session/vote-id to track."""
+    log = await query_log_repository.get_by_id(db, query_log_id)
+    if log is None:
+        raise HTTPException(status_code=404, detail="query_log not found")
+    log.compare_verdict = request.verdict
 
 
 @router.post("/query", response_model=QueryResponse)

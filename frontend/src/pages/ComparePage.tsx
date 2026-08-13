@@ -6,7 +6,14 @@ import { GraphCanvas } from "@/components/GraphCanvas";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { litgraphApi } from "@/services/api";
-import type { CompareQueryResponse } from "@/types";
+import type { CompareQueryResponse, CompareVerdict } from "@/types";
+
+const VERDICT_OPTIONS: { verdict: CompareVerdict; label: string }[] = [
+  { verdict: "vanilla", label: "Vanilla was better" },
+  { verdict: "graphrag", label: "GraphRAG was better" },
+  { verdict: "tie_good", label: "Both equally good" },
+  { verdict: "tie_bad", label: "Both bad" },
+];
 
 // COMPARE-001. Single-shot comparison, not a chat history — one query in,
 // both systems' answers out, side by side. Reuses litgraphApi.compareQuery
@@ -18,12 +25,14 @@ export function ComparePage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CompareQueryResponse | null>(null);
   const [mobileTab, setMobileTab] = useState<"vanilla" | "graphrag">("graphrag");
+  const [verdict, setVerdict] = useState<CompareVerdict | null>(null);
 
   const submit = async () => {
     const q = query.trim();
     if (!q || loading) return;
     setLoading(true);
     setError(null);
+    setVerdict(null);
     try {
       const { data } = await litgraphApi.compareQuery(q);
       setResult(data);
@@ -31,6 +40,19 @@ export function ComparePage() {
       setError("Comparison failed. Please try again.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // COMPARE-002 — optional, changeable within session: each click just
+  // re-POSTs and overwrites the previous verdict server-side.
+  const vote = async (v: CompareVerdict) => {
+    if (!result) return;
+    setVerdict(v);
+    try {
+      await litgraphApi.voteCompare(result.query_log_id, v);
+    } catch {
+      // ponytail: a failed vote isn't worth its own error UI — it's an
+      // optional, low-stakes self-improvement signal, not core functionality.
     }
   };
 
@@ -143,6 +165,22 @@ export function ComparePage() {
             </Panel>
           </div>
         </div>
+
+        {result && !loading && (
+          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-border p-4">
+            <span className="mr-1 text-sm text-muted-foreground">Which answer was better?</span>
+            {VERDICT_OPTIONS.map((opt) => (
+              <Button
+                key={opt.verdict}
+                size="sm"
+                variant={verdict === opt.verdict ? "default" : "outline"}
+                onClick={() => void vote(opt.verdict)}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

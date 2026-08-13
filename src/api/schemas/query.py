@@ -3,6 +3,8 @@ RETRIEVAL-005)."""
 
 from pydantic import BaseModel
 
+from src.models.query_log import CompareVerdict
+
 
 class VanillaQueryRequest(BaseModel):
     query: str
@@ -90,3 +92,10 @@ class CompareQueryResponse(BaseModel):
     vanilla: VanillaQueryResponse
     total_latency_ms: int  # ~= max(graphrag.retrieval_stats.latency_ms, vanilla.latency_ms)
     # + small overhead, since both pipelines run concurrently via asyncio.gather
+    query_log_id: str  # COMPARE-002 — id of the query_log row this comparison was
+    # persisted to, so the frontend can attach a vote to it via POST
+    # /query/compare/{query_log_id}/vote
+
+
+class CompareVoteRequest(BaseModel):
+    verdict: CompareVerdict

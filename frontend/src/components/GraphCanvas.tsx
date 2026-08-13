@@ -264,6 +264,12 @@ export const GraphCanvas = forwardRef<
       animationDuration: 400,
       randomize: isFirstLayout,
       fit: isFirstLayout,
+      // Cytoscape's collision avoidance ignores label text by default, so
+      // dense graphs pack nodes close enough that neighboring labels
+      // overlap — this makes layout treat the label as part of the node's
+      // bounding box instead.
+      nodeDimensionsIncludeLabels: true,
+      ...(layout === "cose" ? { idealEdgeLength: compact ? 60 : 90 } : {}),
     }).run();
     hasLaidOutRef.current = true;
     hasMountedLayoutPropRef.current = true;
@@ -292,7 +298,14 @@ export const GraphCanvas = forwardRef<
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy || !hasMountedLayoutPropRef.current) return;
-    cy.layout({ name: layout, animate: true, animationDuration: 400, fit: true }).run();
+    cy.layout({
+      name: layout,
+      animate: true,
+      animationDuration: 400,
+      fit: true,
+      nodeDimensionsIncludeLabels: true,
+      ...(layout === "cose" ? { idealEdgeLength: compact ? 60 : 90 } : {}),
+    }).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout]);
 

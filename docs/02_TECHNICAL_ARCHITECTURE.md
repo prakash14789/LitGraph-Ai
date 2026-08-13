@@ -180,6 +180,18 @@ litgraph/
 │   │   │   │                        # Verified live in the test: a mocked LLM made to sleep 0.3s
 │   │   │   │                        # measures ~0.48s wall-clock total for both pipelines
 │   │   │   │                        # together, not ~0.6s+ serial.
+│   │   │   │                        # COMPARE-002: /query/compare now persists a query_log row
+│   │   │   │                        # after both pipelines finish (query_text + both answers +
+│   │   │   │                        # total_latency_ms), via plain db.add()/await db.flush()
+│   │   │   │                        # rather than query_log_repository.create() — its
+│   │   │   │                        # session.refresh() is a second DB round-trip only needed
+│   │   │   │                        # for server-generated columns; `id` is a client-side
+│   │   │   │                        # uuid4 default already set after flush(). Response gains
+│   │   │   │                        # `query_log_id`. New POST
+│   │   │   │                        # /query/compare/{query_log_id}/vote (204, 404 if unknown
+│   │   │   │                        # id) sets compare_verdict — a plain UPDATE, so re-voting
+│   │   │   │                        # just overwrites the previous verdict ("change vote
+│   │   │   │                        # within session" needs no extra state).
 │   │   │   ├── graph.py             # GET /graph/overview, /graph/subgraph, /graph/entity/{id},
 │   │   │   │                        # /graph/search — built GRAPH-001. /graph/subgraph reuses
 │   │   │   │                        # RETRIEVAL-002's retrieve_subgraph() with a single-entity
@@ -218,6 +230,10 @@ litgraph/
 │   │   │   │                        # VanillaQueryResponse — it had no token stat at all before,
 │   │   │   │                        # a real gap against the Compare page's own "token count"
 │   │   │   │                        # acceptance criterion, not something to quietly work around.
+│   │   │   │                        # COMPARE-002 added `query_log_id: str` to
+│   │   │   │                        # CompareQueryResponse and a new CompareVoteRequest
+│   │   │   │                        # (`verdict: CompareVerdict`, imported from
+│   │   │   │                        # models/query_log.py rather than a duplicate schema enum).
 │   │   │   ├── graph.py             # GraphOverview, GraphNodeSchema (reuses query.py's
 │   │   │   │                        # SubgraphEdgeSchema for edges rather than a duplicate),
 │   │   │   │                        # EntityDetailResponse, SearchResponse — built GRAPH-001
@@ -674,7 +690,12 @@ litgraph/
 │   │   ├── extraction_job.py        # Tracks ingestion job status
 │   │   ├── query_log.py             # Query history (matches §4.1's query_log table — the
 │   │   │                             # original tree omitted this file even though the table
-│   │   │                             # was always in the schema)
+│   │   │                             # was always in the schema). COMPARE-002 added
+│   │   │                             # CompareVerdict (vanilla/graphrag/tie_good/tie_bad) +
+│   │   │                             # compare_verdict column — kept separate from the
+│   │   │                             # pre-existing UserFeedback (good/bad/none), which is a
+│   │   │                             # binary verdict on one answer, not a 4-way verdict on
+│   │   │                             # two compared answers.
 │   │   └── user.py                  # User accounts (not built — no auth in MVP, see Security §2.1)
 │   │
 │   ├── repositories/                # Generic CRUD (added SETUP-004 — not in the original tree)
@@ -999,6 +1020,19 @@ litgraph/
 │   │   │                             # 2/2 with coverage on, on the same otherwise-unchanged code.
 │   │   │                             # If this test flakes, re-run with `--no-cov` before assuming
 │   │   │                             # a real regression.
+│   │   │                             # COMPARE-002 update: this time the failure *was* real, not
+│   │   │                             # instrumentation — persisting a query_log row after gather()
+│   │   │                             # adds a genuine sequential DB round-trip, confirmed by 2/4
+│   │   │                             # failures even with `--no-cov`. Fixed the code first (dropped
+│   │   │                             # query_log_repository.create()'s extra refresh() round-trip,
+│   │   │                             # see routes/query.py's entry above), which alone took it to
+│   │   │                             # 3/4; the residual margin was closed with a documented fixed
+│   │   │                             # `_QUERY_LOG_INSERT_BUFFER = 0.2` added to the upper bound
+│   │   │                             # (flat, not multiplied — the insert is a one-time sequential
+│   │   │                             # cost, not proportional to `_SLEEP_SECONDS`), not by loosening
+│   │   │                             # the multiplier blind. 5/5 clean after both changes. Also
+│   │   │                             # gained 2 new tests: vote persists + is changeable
+│   │   │                             # (re-POST overwrites), unknown query_log_id -> 404.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_api.py          # Built GRAPH-001 — real HTTP requests, real Neo4j, hand-
 │   │                                   # built Cypher fixtures (same pattern as
@@ -1140,7 +1174,14 @@ litgraph/
 │       │                              # active tab, not conditional rendering — so switching tabs
 │       │                              # doesn't need a second GraphCanvas mount). GraphRAG's panel
 │       │                              # reuses a `compact` GraphCanvas for the subgraph, same as
-│       │                              # FE-004's mini panel.
+│       │                              # FE-004's mini panel. COMPARE-002 added a "Which answer was
+│       │                              # better?" button row below both panels once loaded (4
+│       │                              # options matching CompareVerdict) — calls
+│       │                              # litgraphApi.voteCompare(result.query_log_id, verdict) on
+│       │                              # click, re-postable to change the vote within the session.
+│       │                              # A failed vote POST is swallowed silently, not surfaced as
+│       │                              # an error — it's an optional self-improvement signal, not
+│       │                              # core functionality.
 │       ├── store/
 │       │   └── chatStore.ts          # FE-003: Zustand store, owns the send/retry API-call
 │       │                              # logic (not just state) so ChatPage stays a dumb view.
@@ -1234,12 +1275,15 @@ litgraph/
 │       │                              # (RETRIEVAL-005/006, INGEST-004, papers list/detail/
 │       │                              # delete) — graph/collections calls land with their own
 │       │                              # tickets (GRAPH-001, POLISH-005) rather than being stubbed
-│       │                              # against routes that would just 404.
+│       │                              # against routes that would just 404. COMPARE-002 added
+│       │                              # voteCompare(queryLogId, verdict).
 │       └── types/
 │           └── index.ts              # Mirrors src/api/schemas/query.py and papers.py's
 │                                      # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
 │                                      # kept to what api.ts actually consumes
 │                                      # today, extended per-field as later pages need more.
+│                                      # COMPARE-002 added CompareVerdict and
+│                                      # CompareQueryResponse.query_log_id.
 │
 ├── scripts/
 │   ├── review_extraction.py          # Built EXTRACT-006 — `python -m scripts.review_extraction
@@ -1342,6 +1386,7 @@ CREATE TABLE query_log (
     vanilla_answer  TEXT,
     retrieved_nodes JSONB,                    -- Node IDs used in answer
     user_feedback   ENUM('good','bad','none') DEFAULT 'none',
+    compare_verdict ENUM('vanilla','graphrag','tie_good','tie_bad'),  -- COMPARE-002, nullable (optional vote)
     latency_ms      INTEGER,
     created_at      TIMESTAMP DEFAULT NOW()
 );
@@ -2085,7 +2130,8 @@ volumes:
 | Method | Endpoint | Description |
 |--------|---------|-------------|
 | `POST` | `/api/v1/query` | GraphRAG query. Returns answer + citations + retrieved subgraph. |
-| `POST` | `/api/v1/query/compare` | Same query run on both GraphRAG and vanilla RAG. Returns both answers for comparison. |
+| `POST` | `/api/v1/query/compare` | Same query run on both GraphRAG and vanilla RAG. Returns both answers for comparison, plus `query_log_id`. |
+| `POST` | `/api/v1/query/compare/{query_log_id}/vote` | COMPARE-002. Body `{verdict}` (vanilla\|graphrag\|tie_good\|tie_bad). 204, or 404 if unknown id. Re-postable to change vote. |
 | `POST` | `/api/v1/query/vanilla` | Vanilla RAG only (baseline). |
 
 ### 7.3 Graph

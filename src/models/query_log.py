@@ -15,6 +15,17 @@ class UserFeedback(str, enum.Enum):
     NONE = "none"
 
 
+class CompareVerdict(str, enum.Enum):
+    """COMPARE-002 — distinct from UserFeedback (binary good/bad on a single
+    answer): this is a 4-way verdict on which of the two *compared* answers
+    was better, so it needs its own value set."""
+
+    VANILLA = "vanilla"
+    GRAPHRAG = "graphrag"
+    TIE_GOOD = "tie_good"
+    TIE_BAD = "tie_bad"
+
+
 class QueryLog(Base):
     __tablename__ = "query_log"
 
@@ -27,6 +38,9 @@ class QueryLog(Base):
         Enum(UserFeedback, name="user_feedback", values_callable=lambda e: [m.value for m in e]),
         default=UserFeedback.NONE,
         nullable=False,
+    )
+    compare_verdict: Mapped[CompareVerdict | None] = mapped_column(
+        Enum(CompareVerdict, name="compare_verdict", values_callable=lambda e: [m.value for m in e])
     )
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

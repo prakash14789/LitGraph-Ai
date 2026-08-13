@@ -68,16 +68,68 @@ async def test_compare_runs_both_pipelines_in_parallel(test_client, mock_llm_cli
 
         # serial would take >= 2 * _SLEEP_SECONDS plus each pipeline's own
         # real DB/Chroma/embedding overhead on top (measured ~0.9s+ for a
-        # serial run); parallel measured ~0.48s. 1.8x the single sleep
+        # serial run); parallel measured ~0.48-0.65s. 1.8x the single sleep
         # (0.54s) sits well below a realistic serial total while leaving
         # comfortable margin above the ~1x-plus-overhead parallel case, so
         # it distinguishes the two without being flaky either direction.
         # The floor confirms the mocked sleep actually ran (not skipped).
+        #
+        # COMPARE-002 added a real, permanent extra step after gather(): an
+        # INSERT persisting the query_log row the vote endpoint attaches to.
+        # That's sequential (can't run concurrently with the two pipelines —
+        # it needs their finished answers), so it's a flat addition to
+        # elapsed, not a multiple of _SLEEP_SECONDS — a fixed-ms buffer
+        # models that better than bumping the multiplier would.
+        _QUERY_LOG_INSERT_BUFFER = 0.2
         assert elapsed > _SLEEP_SECONDS * 0.9
-        assert elapsed < _SLEEP_SECONDS * 1.8
+        assert elapsed < _SLEEP_SECONDS * 1.8 + _QUERY_LOG_INSERT_BUFFER
         assert body["total_latency_ms"] >= int(_SLEEP_SECONDS * 1000)
+        assert body["query_log_id"]
     finally:
         chunks.delete(ids=[chunk_id])
         async with AsyncSession(bind=test_engine) as session:
             await session.execute(delete(Paper).where(Paper.id == uuid.UUID(paper_id)))
             await session.commit()
+
+
+async def test_vote_compare_stores_and_allows_changing_verdict(test_client, test_engine):
+    """COMPARE-002. Doesn't need a real compare run — inserts a query_log
+    row directly and hits the vote endpoint against it, since the thing
+    under test is the vote endpoint's own persistence, not the compare
+    pipeline (already covered above)."""
+    from src.models.query_log import QueryLog
+
+    log_id = uuid.uuid4()
+    async with AsyncSession(bind=test_engine) as session:
+        session.add(QueryLog(id=log_id, query_text="does voting work?"))
+        await session.commit()
+
+    try:
+        resp = await test_client.post(
+            f"/api/v1/query/compare/{log_id}/vote", json={"verdict": "graphrag"}
+        )
+        assert resp.status_code == 204
+
+        async with AsyncSession(bind=test_engine) as session:
+            row = await session.get(QueryLog, log_id)
+            assert row.compare_verdict.value == "graphrag"
+
+        # user can change their vote within the session — re-POST overwrites
+        resp = await test_client.post(
+            f"/api/v1/query/compare/{log_id}/vote", json={"verdict": "tie_bad"}
+        )
+        assert resp.status_code == 204
+        async with AsyncSession(bind=test_engine) as session:
+            row = await session.get(QueryLog, log_id)
+            assert row.compare_verdict.value == "tie_bad"
+    finally:
+        async with AsyncSession(bind=test_engine) as session:
+            await session.execute(delete(QueryLog).where(QueryLog.id == log_id))
+            await session.commit()
+
+
+async def test_vote_compare_unknown_id_returns_404(test_client):
+    resp = await test_client.post(
+        f"/api/v1/query/compare/{uuid.uuid4()}/vote", json={"verdict": "vanilla"}
+    )
+    assert resp.status_code == 404

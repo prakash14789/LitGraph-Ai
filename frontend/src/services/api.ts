@@ -2,6 +2,7 @@ import axios from "axios";
 
 import type {
   CompareQueryResponse,
+  CompareVerdict,
   EntityDetailResponse,
   GraphOverview,
   GraphSubgraphResponse,
@@ -55,6 +56,8 @@ export const litgraphApi = {
     api.post<VanillaQueryResponse>("/query/vanilla", { query }),
   compareQuery: (query: string) =>
     api.post<CompareQueryResponse>("/query/compare", { query }),
+  voteCompare: (queryLogId: string, verdict: CompareVerdict) =>
+    api.post(`/query/compare/${queryLogId}/vote`, { verdict }),
 
   // Ingest
   uploadPapers: (files: File[]) => {
