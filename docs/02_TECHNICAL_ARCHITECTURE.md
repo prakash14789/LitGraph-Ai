@@ -340,17 +340,93 @@ litgraph/
 │   │   │   │                        # in the same directory has sync, non-Neo4j tests an autouse
 │   │   │   │                        # async fixture would break) by the two files that actually
 │   │   │   │                        # call get_driver(): test_graph_writer.py, test_papers_api.py.
-│   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed — built INGEST-006.
-│   │   │                            # Entity/relation extraction (Epic 2) extends this later.
-│   │   │                            # On any step failure: marks job/paper FAILED with the error,
-│   │   │                            # and deletes any chunks that made it into Chroma before the
-│   │   │                            # failure — without that, embedding_storage's duplicate check
-│   │   │                            # (only checks whether *any* chunks exist for a paper_id)
-│   │   │                            # would see the partial data and skip re-embedding forever on
-│   │   │                            # retry. src/tasks/ingest_task.py is now just the thin sync
-│   │   │                            # Celery entrypoint (asyncio.run(run_pipeline(job_id))) — the
-│   │   │                            # real logic used to live there directly (INGEST-004), moved
-│   │   │                            # here once this ticket existed to build it properly.
+│   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed -> extract entities ->
+│   │   │                            # extract relations -> resolve -> write graph. parse/chunk/
+│   │   │                            # embed built INGEST-006; extract/relate/resolve/write added
+│   │   │                            # EXTRACT-005, finally connecting EXTRACT-001 through 004 (each
+│   │   │                            # already live-tested standalone) into the real upload flow —
+│   │   │                            # before this ticket, uploading a paper never touched Neo4j at
+│   │   │                            # all, only Chroma/Postgres.
+│   │   │                            #
+│   │   │                            # Two separate try/except blocks, not one. Block 1
+│   │   │                            # (parse/chunk/embed, unchanged since INGEST-006): on failure,
+│   │   │                            # deletes any chunks that made it into Chroma and marks
+│   │   │                            # job+paper FAILED — without that cleanup,
+│   │   │                            # embedding_storage's duplicate check (only checks whether
+│   │   │                            # *any* chunks exist for a paper_id) would see partial data
+│   │   │                            # and skip re-embedding forever on retry. Block 2
+│   │   │                            # (extract/relate/resolve/write): wrapped independently
+│   │   │                            # because by the time it runs, chunks are already durable and
+│   │   │                            # paper.ingestion_status is already COMPLETED — a crash here
+│   │   │                            # must not roll that back. That's the ticket's own acceptance
+│   │   │                            # criterion (paper still queryable via vanilla RAG even if
+│   │   │                            # graph extraction fails) and it's exactly what happened live:
+│   │   │                            # a real Gemini per-minute rate-limit 429 (free tier, 5
+│   │   │                            # RPM on whatever "gemini-flash-latest" currently resolves
+│   │   │                            # to) hit mid-run during testing, retried twice via
+│   │   │                            # llm_client's backoff, still failed, and block 2's except
+│   │   │                            # correctly marked the ExtractionJob FAILED while the Paper
+│   │   │                            # row stayed COMPLETED — caught by the design, not a bug.
+│   │   │                            # On success, only entity/node writes are guaranteed
+│   │   │                            # idempotent on a pipeline retry (via graph_writer.py's MERGE
+│   │   │                            # keys) — relationships are CREATE per EXTRACT-004's own
+│   │   │                            # documented scope trim, so no explicit rollback/cleanup
+│   │   │                            # exists for block 2 the way _cleanup_partial_chunks exists
+│   │   │                            # for block 1.
+│   │   │                            #
+│   │   │                            # REPORTS_RESULT relationships are synthesized directly from
+│   │   │                            # entity_extractor's own claims list (paper -> each claim,
+│   │   │                            # using the claim's own text/confidence), NOT from
+│   │   │                            # relation_extractor's independently-worded REPORTS_RESULT
+│   │   │                            # output — fuzzy-matching two separate LLM calls' claim text
+│   │   │                            # against each other to find "the same" claim node is
+│   │   │                            # fragile; writing the claim and its edge from the same text
+│   │   │                            # in the same step isn't. CONTRADICTS and CITES are extracted
+│   │   │                            # (relation_extractor.py still returns them) but not written
+│   │   │                            # to the graph — both need claim-to-claim / paper-to-paper
+│   │   │                            # resolution-by-text infrastructure this ticket doesn't build;
+│   │   │                            # skipped deliberately, not silently, flagged here for a
+│   │   │                            # future ticket if eval surfaces a real need. Metrics
+│   │   │                            # (entity_extractor's 4th entity kind) also get no graph node
+│   │   │                            # of their own — §4.2's EVALUATES_ON edge example already
+│   │   │                            # carries metric/value/dataset as edge properties, so a
+│   │   │                            # separate Metric node would duplicate that data for no
+│   │   │                            # relation type in the schema to point at it.
+│   │   │                            #
+│   │   │                            # graph/queries.py's new EXISTING_NAMED_ENTITIES +
+│   │   │                            # graph_writer.py's new fetch_candidate_entities() (both
+│   │   │                            # EXTRACT-005) are the real Neo4j lookup entity_resolver.py's
+│   │   │                            # and relation_extractor.py's candidate-list interfaces were
+│   │   │                            # always designed to eventually take — INGEST-007,
+│   │   │                            # EXTRACT-002, and EXTRACT-003 had all built and tested
+│   │   │                            # against a stand-in candidate list because this lookup
+│   │   │                            # didn't exist yet. That candidate list is seeded into the
+│   │   │                            # pipeline's per-entity name_index BEFORE resolving this
+│   │   │                            # paper's own entities — found live, missing this seed step
+│   │   │                            # meant a cross-paper EXTENDS/OUTPERFORMS relation correctly
+│   │   │                            # extracted against a pre-existing candidate got dropped as
+│   │   │                            # "unlinked" purely because that candidate's node id was
+│   │   │                            # never indexed, only entities this run itself wrote were.
+│   │   │                            #
+│   │   │                            # Live-verified end to end (tests/integration/
+│   │   │                            # test_ingestion_pipeline.py::test_pipeline_extracts_and_
+│   │   │                            # writes_real_graph): real LLM, real Neo4j, real Chroma, no
+│   │   │                            # mocks — completed in ~33s against Groq (well under the
+│   │   │                            # ticket's <90s budget), correctly merged "WidgetNet-9000"
+│   │   │                            # into "WidgetNet" via EXTRACT-003's suffix-variant heuristic
+│   │   │                            # + LLM confirmation, wrote the Method node's embedding to
+│   │   │                            # both Neo4j and Chroma's entity_embeddings. Also directly
+│   │   │                            # observed live: real same-minute Gemini free-tier rate
+│   │   │                            # limiting (a genuinely different failure mode than the
+│   │   │                            # ~20/day calendar cap documented in entity_resolver.py's
+│   │   │                            # tree comment) can push a run's wall-clock time past 90s
+│   │   │                            # purely from retry/backoff under repeated same-minute test
+│   │   │                            # load — an environment/quota characteristic, not a pipeline
+│   │   │                            # defect; a single clean run comfortably clears the budget.
+│   │   │                            # src/tasks/ingest_task.py is just the thin sync Celery
+│   │   │                            # entrypoint (asyncio.run(run_pipeline(job_id))) — the real
+│   │   │                            # logic used to live there directly (INGEST-004), moved here
+│   │   │                            # once this ticket existed to build it properly (INGEST-006).
 │   │   │
 │   │   ├── retrieval/               # Query → Retrieved Context
 │   │   │   ├── __init__.py
@@ -543,9 +619,9 @@ litgraph/
 │   │   │                             # never touch Neo4j; an autouse *async* fixture requested by a
 │   │   │                             # *sync* test isn't handled by any pytest plugin and warns
 │   │   │                             # it'll be a hard error in pytest 9 (found live making it
-│   │   │                             # autouse first). Only test_graph_writer.py and
-│   │   │                             # test_papers_api.py opt in — the two files that actually call
-│   │   │                             # get_driver().
+│   │   │                             # autouse first). test_graph_writer.py, test_papers_api.py,
+│   │   │                             # and (EXTRACT-005) test_ingestion_pipeline.py opt in — the
+│   │   │                             # files that actually call get_driver().
 │   │   ├── test_embedding_storage.py # Built INGEST-003 — talks to the real ChromaDB
 │   │   │                             # container, not a mock (that's the actual thing worth
 │   │   │                             # verifying: add/get(where=)/duplicate-skip against
@@ -565,6 +641,21 @@ litgraph/
 │   │   │                             # chunk cleanup on failure — simulates one chunk actually
 │   │   │                             # landing in Chroma before a later step blows up, asserts
 │   │   │                             # zero chunks remain for that paper afterward.
+│   │   │                             # test_pipeline_extracts_and_writes_real_graph (EXTRACT-005):
+│   │   │                             # no mocks anywhere — real LLM, real Neo4j, real Chroma — the
+│   │   │                             # one test proving the full parse->chunk->embed->extract->
+│   │   │                             # relate->resolve->write chain actually connects end to end.
+│   │   │                             # See pipeline.py's tree comment for what it found live
+│   │   │                             # (the candidate-seeding bug, real Gemini rate limiting).
+│   │   │                             # Cleanup is relationship-scoped, same orphan-safety pattern
+│   │   │                             # as DELETE_PAPER_CASCADE (only deletes a Method/Dataset
+│   │   │                             # connected to this test's paper if it has no connection to
+│   │   │                             # any OTHER paper) rather than name-substring matching — an
+│   │   │                             # earlier name-substring version missed entities the LLM
+│   │   │                             # extracted under names the test didn't anticipate (e.g.
+│   │   │                             # "transformer" from the Method section text) and they
+│   │   │                             # leaked into the dev graph across repeated live runs before
+│   │   │                             # being caught and cleaned up by hand.
 │   │   ├── test_query_api.py         # Built INGEST-005 — real HTTP request against the real
 │   │   │                             # FastAPI app + real ChromaDB, mocked LLM. Live-verified
 │   │   │                             # separately (not in this file — needs a running worker +

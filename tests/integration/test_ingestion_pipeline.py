@@ -1,7 +1,16 @@
 """Integration test for src.services.ingestion.pipeline.run_pipeline — the
 real parse->chunk->embed logic, against the real test Postgres DB and the
-real ChromaDB container (not mocked — that's the point of this test)."""
+real ChromaDB container (not mocked — that's the point of this test).
 
+test_pipeline_extracts_and_writes_real_graph (EXTRACT-005) goes further:
+real LLM calls too, real Neo4j writes — no mocks anywhere in that one test,
+proving the full parse->chunk->embed->extract->relate->resolve->write chain
+actually connects end to end, not just that each piece works in isolation
+(every other piece already had its own live-tested proof — EXTRACT-001
+through 004 — but nothing had run them back to back through the real
+pipeline until this ticket)."""
+
+import time
 import uuid
 
 import fitz
@@ -10,12 +19,13 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.graph.connection import get_driver
 from src.models.extraction_job import ExtractionJob, JobStatus
 from src.models.paper import IngestionStatus, Paper
 from src.services.ingestion import pipeline
 from src.vectorstore.store import add_texts, get_collection
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("close_neo4j_driver_after_test")]
 
 
 def _build_pdf(path: str) -> None:
@@ -157,4 +167,125 @@ async def test_pipeline_cleans_up_partial_chunks_on_failure(test_engine, tmp_pat
         remaining = collection.get(where={"paper_id": str(paper_id)})
         assert remaining["ids"] == []  # the partially-embedded chunk was cleaned up
     finally:
+        await _cleanup(test_engine, paper_id, job_id)
+
+
+def _build_widgetnet_pdf(path: str) -> None:
+    """Content shaped to reliably elicit one clear Method + one clear
+    Dataset + an INTRODUCES/EVALUATES_ON relation — a made-up name
+    (WidgetNet-9000) so this can't collide with a real paper the LLM
+    already knows about from training data."""
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 50
+    for text, size, step in [
+        ("WidgetNet: A Study of Widget Classification", 18, 30),
+        ("Abstract", 13, 20),
+        (
+            "We propose WidgetNet-9000, a novel transformer-based architecture for "
+            "widget classification. We evaluate WidgetNet-9000 on the WidgetBench-2024 "
+            "benchmark dataset and achieve 95.2% accuracy, outperforming prior baselines.",
+            10,
+            50,
+        ),
+        ("Method", 13, 20),
+        (
+            "WidgetNet-9000 uses a transformer encoder followed by a classification "
+            "head to categorize widgets into their respective classes.",
+            10,
+            40,
+        ),
+    ]:
+        page.insert_text((72, y), text, fontsize=size)
+        y += step
+    doc.save(path)
+    doc.close()
+
+
+async def test_pipeline_extracts_and_writes_real_graph(test_engine, tmp_path):
+    """EXTRACT-005's own acceptance criterion, proven live: real LLM calls
+    (no mock_llm_client), real Neo4j writes, real Chroma entity_embeddings —
+    the full chain, not a single module in isolation. Cleans up its own
+    Neo4j nodes and Chroma entity rows; a WIDGETNET-TEST- prefixed name
+    keeps this from colliding with anything real."""
+    pdf_path = tmp_path / "widgetnet.pdf"
+    _build_widgetnet_pdf(str(pdf_path))
+    paper_id, job_id = await _create_paper_and_job(test_engine, str(pdf_path))
+
+    try:
+        started = time.monotonic()
+        await pipeline.run_pipeline(str(job_id))
+        elapsed = time.monotonic() - started
+        assert elapsed < 90  # ticket's own end-to-end budget, excluding queue wait
+
+        async with AsyncSession(bind=test_engine) as session:
+            job = await session.get(ExtractionJob, job_id)
+            assert job.status == JobStatus.COMPLETED
+            assert job.entities_found > 0  # real extraction found something, not a no-op
+
+        driver = get_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                "MATCH (p:Paper {paper_id: $id})-[r]->(m:Method) "
+                "WHERE toLower(m.canonical_name) CONTAINS 'widgetnet' "
+                "RETURN elementId(m) AS method_id, type(r) AS rel_type, "
+                "       m.embedding IS NOT NULL AS has_embedding "
+                "LIMIT 1",
+                id=str(paper_id),
+            )
+            # LIMIT 1, not a bare single(): extraction can legitimately
+            # produce more than one WidgetNet-ish Method node (e.g. "WidgetNet"
+            # and "WidgetNet-9000" both extracted, resolution shortlisted them
+            # via the suffix-variant heuristic but the LLM verification call
+            # didn't confirm the merge that run — real, observed live; the
+            # resolver's designed-safe fallback is to keep them separate
+            # rather than merge on an inconclusive answer) — any one of them
+            # is sufficient proof the graph write happened.
+            record = await result.single()
+        assert record is not None, "no WidgetNet-9000 Method node/relation found in Neo4j"
+        assert record["has_embedding"]
+        method_id = record["method_id"]
+
+        entities = get_collection(settings.chroma_collection_entities)
+        chroma_record = entities.get(ids=[f"entity_{method_id}"], include=["metadatas"])
+        assert chroma_record["ids"] == [f"entity_{method_id}"]  # graph_writer's Chroma write landed
+        assert chroma_record["metadatas"][0]["entity_type"] == "Method"
+    finally:
+        # Scoped deletes only, never a blanket "delete every neighbor" —
+        # this runs against the same dev Neo4j real data lives in (no
+        # separate test instance). Same orphan-safety logic as
+        # DELETE_PAPER_CASCADE (INGEST-007): only deletes a Method/Dataset
+        # connected to THIS test's paper if it has no connection to any
+        # OTHER paper, so a genuinely shared/real entity is never at risk
+        # even if cross-paper relation extraction linked to one. Earlier
+        # version of this cleanup matched by name substring
+        # ("widgetnet"/"widgetbench") and missed entities the LLM extracted
+        # under other names (e.g. "transformer", "classification head" from
+        # the Method section text) — found live, those leaked into the dev
+        # graph across repeated runs and were cleaned up by hand once.
+        driver = get_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                "MATCH (p:Paper {paper_id: $id})-[]->(n) "
+                "WHERE (n:Method OR n:Dataset) AND NOT EXISTS { "
+                "  MATCH (other:Paper)-[]->(n) WHERE other.paper_id <> $id "
+                "} "
+                "RETURN DISTINCT elementId(n) AS id",
+                id=str(paper_id),
+            )
+            entity_ids = [r["id"] async for r in result]
+
+            await session.run("MATCH (p:Paper {paper_id: $id}) DETACH DELETE p", id=str(paper_id))
+            await session.run(
+                "MATCH (n:Claim {source_paper_id: $id}) DETACH DELETE n", id=str(paper_id)
+            )
+            if entity_ids:
+                await session.run(
+                    "MATCH (n) WHERE elementId(n) IN $ids DETACH DELETE n", ids=entity_ids
+                )
+
+        if entity_ids:
+            get_collection(settings.chroma_collection_entities).delete(
+                ids=[f"entity_{i}" for i in entity_ids]
+            )
         await _cleanup(test_engine, paper_id, job_id)

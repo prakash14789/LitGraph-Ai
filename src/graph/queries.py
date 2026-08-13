@@ -47,3 +47,17 @@ WITH n, elementId(n) AS id
 DETACH DELETE n
 RETURN collect(id) AS orphaned_ids
 """
+
+# Every existing Method/Dataset node, across all papers — the "real Neo4j
+# lookup" entity_resolver.py's and relation_extractor.py's candidate-list
+# interfaces were always designed around (see their own module docstrings).
+# Built EXTRACT-005, which is the first ticket that actually has real graph
+# data to look candidates up against, now that EXTRACT-004 exists to write
+# it. Returns everything resolve_entity()/ResolvableEntity needs, so the
+# pipeline doesn't need a second round-trip per entity.
+EXISTING_NAMED_ENTITIES = """
+MATCH (n)
+WHERE n:Method OR n:Dataset
+RETURN elementId(n) AS id, labels(n)[0] AS entity_type, n.canonical_name AS canonical_name,
+       n.description AS description, n.aliases AS aliases, n.embedding AS embedding
+"""

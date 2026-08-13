@@ -30,6 +30,11 @@ each Author node straight from paper.authors and CREATE the
 Paper-[:AUTHORED_BY]->Author edges, no LLM/resolution step needed for a
 field that's already structured.
 
+fetch_candidate_entities() (EXTRACT-005) is this module's one read: every
+existing Method/Dataset node, feeding entity_resolver's resolve_entity()
+and relation_extractor's cross-paper candidate list — the real lookup both
+modules were always designed to take a stand-in list for.
+
 ponytail: no distributed transaction across Neo4j and Chroma — a crash
 between the two writes can leave a node's Chroma record briefly stale.
 Acceptable at this write volume; upgrade path is an outbox/retry if that
@@ -49,7 +54,8 @@ import structlog
 
 from src.config import settings
 from src.graph.connection import get_driver
-from src.services.ingestion.entity_resolver import ResolutionResult
+from src.graph.queries import EXISTING_NAMED_ENTITIES
+from src.services.ingestion.entity_resolver import ResolvableEntity, ResolutionResult
 from src.vectorstore.embedder import embed
 from src.vectorstore.store import get_collection
 
@@ -170,6 +176,31 @@ async def write_claim(paper_id: str, text: str, claim_type: str, confidence: flo
     _upsert_chroma_entity(node_id, "Claim", text[:80], text, vector, paper_id)
     logger.info("graph_writer.claim_written", node_id=node_id, claim_type=claim_type)
     return node_id
+
+
+async def fetch_candidate_entities() -> list[ResolvableEntity]:
+    """Every existing Method/Dataset node, across all papers — the real
+    Neo4j lookup entity_resolver.py's and relation_extractor.py's
+    candidate-list interfaces were always designed around, wired in by
+    EXTRACT-005 now that there's real data to look up. Lives here, not
+    entity_resolver.py (which deliberately never touches Neo4j itself, per
+    its own module docstring) — this is a read, but it's this module's
+    Neo4j session machinery either way."""
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(EXISTING_NAMED_ENTITIES)
+        records = [record async for record in result]
+    return [
+        ResolvableEntity(
+            name=r["canonical_name"],
+            entity_type=r["entity_type"],
+            description=r["description"] or "",
+            aliases=r["aliases"] or [],
+            id=r["id"],
+            embedding=r["embedding"],
+        )
+        for r in records
+    ]
 
 
 async def write_relationship(
