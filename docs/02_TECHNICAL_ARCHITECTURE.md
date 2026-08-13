@@ -246,7 +246,47 @@ litgraph/
 │   │   │   │                        # sometimes on the cross-paper pass specifically. Not fully
 │   │   │   │                        # solved; flagged for EXTRACT-003/004 to reconsider if it
 │   │   │   │                        # proves problematic once real candidate lists exist.
-│   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
+│   │   │   ├── entity_resolver.py   # Deduplicate entities across papers — built EXTRACT-003,
+│   │   │   │                        # the ticket's own "hardest engineering problem" flag.
+│   │   │   │                        # resolve_entity(new, candidates) runs the ticket's 5-step
+│   │   │   │                        # cascade: exact name match -> merge immediately; fuzzy
+│   │   │   │                        # name/alias + embedding-description similarity ->
+│   │   │   │                        # unioned candidate shortlist; LLM verification
+│   │   │   │                        # (best-scoring candidate first) -> merge on first
+│   │   │   │                        # confirmed match; nothing confirmed -> create new. Takes
+│   │   │   │                        # a candidate list, doesn't query Neo4j itself — nothing
+│   │   │   │                        # to query yet until EXTRACT-004 exists; that ticket wires
+│   │   │   │                        # in the real candidate lookup.
+│   │   │   │                        #
+│   │   │   │                        # Live-tested against the ticket's own acceptance-criteria
+│   │   │   │                        # examples and found both of the ticket's literal
+│   │   │   │                        # thresholds don't work as specified against a real
+│   │   │   │                        # embedding model: "BERT" vs "BERT-base" scores ~0.62 on a
+│   │   │   │                        # plain fuzzy ratio (spec: >0.85) and real
+│   │   │   │                        # paraphrased-same-entity description pairs scored
+│   │   │   │                        # 0.57-0.64 cosine (spec: >0.90) — as literally specified,
+│   │   │   │                        # neither of the ticket's own two examples would ever
+│   │   │   │                        # reach the LLM step. Fixed with two targeted,
+│   │   │   │                        # boundary/stopword-aware pattern checks layered onto the
+│   │   │   │                        # fuzzy pass — a suffix-variant check ("BERT"/"BERT-base",
+│   │   │   │                        # "GPT"/"GPT2") and an acronym check ("BERT" vs its own
+│   │   │   │                        # full expansion) — plus recalibrated
+│   │   │   │                        # entity_resolution_embedding_threshold (0.55, not the
+│   │   │   │                        # ticket's 0.90, evidence-based off the real measurements).
+│   │   │   │                        # Re-verified live after the fix: both examples merge
+│   │   │   │                        # correctly, with the shorter name kept as canonical
+│   │   │   │                        # ("BERT") and the longer one demoted to an alias. The
+│   │   │   │                        # negative example ("BERT" the NLP model vs "BERT" a
+│   │   │   │                        # person) is satisfied by the entity_type guard — Method
+│   │   │   │                        # vs Author never even reach step 1. Known remaining gap,
+│   │   │   │                        # left as the ticket literally specifies rather than
+│   │   │   │                        # silently patched: an exact-name match merges immediately
+│   │   │   │                        # with no LLM check, so two same-type entities that
+│   │   │   │                        # happen to share an exact name but are genuinely
+│   │   │   │                        # unrelated would still auto-merge — judged rare enough in
+│   │   │   │                        # an academic corpus not to slow down the common, safe
+│   │   │   │                        # case. Performance measured live: 16.8ms for steps 1-3
+│   │   │   │                        # (excluding the LLM call, per the ticket's own carve-out).
 │   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
 │   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed — built INGEST-006.
 │   │   │                            # Entity/relation extraction (Epic 2) extends this later.
@@ -271,12 +311,15 @@ litgraph/
 │   │   │   ├── __init__.py
 │   │   │   ├── generator.py         # LLM call with graph context → cited answer
 │   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.) —
-│   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT (EXTRACT-001) and
+│   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT (EXTRACT-001),
 │   │   │   │                        # RELATION_EXTRACTION_INTRA_PROMPT/_CROSS_PROMPT
-│   │   │   │                        # (EXTRACT-002) built here, ahead of this directory's own
-│   │   │   │                        # generator.py — entity_extractor.py/relation_extractor.py
-│   │   │   │                        # (in ingestion/) import from here per the ticket's file
-│   │   │   │                        # layout rather than keeping prompts local to each module.
+│   │   │   │                        # (EXTRACT-002), and ENTITY_RESOLUTION_VERIFICATION_PROMPT
+│   │   │   │                        # (EXTRACT-003 — the resolver's step-4 "are these the same
+│   │   │   │                        # real-world entity?" yes/no check) built here, ahead of
+│   │   │   │                        # this directory's own generator.py — entity_extractor.py/
+│   │   │   │                        # relation_extractor.py/entity_resolver.py (in ingestion/)
+│   │   │   │                        # import from here per the ticket's file layout rather
+│   │   │   │                        # than keeping prompts local to each module.
 │   │   │   └── faithfulness.py      # Check: does answer follow from context? (self-audit)
 │   │   │
 │   │   ├── vanilla_rag/             # Baseline comparison system — built INGEST-005
@@ -426,7 +469,17 @@ litgraph/
 │   │   │                            # same 5 papers as EXTRACT-001 was done separately — see
 │   │   │                            # relation_extractor.py's tree comment for the 2 real issues
 │   │   │                            # it caught and fixed.
-│   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
+│   │   ├── test_entity_resolver.py  # Built EXTRACT-003 — mocked LLM + mocked embed(), 14
+│   │   │                            # tests: exact/case/whitespace matching, entity_type
+│   │   │                            # isolation, fuzzy+LLM and embedding+LLM merge/reject
+│   │   │                            # paths, the suffix-variant and acronym-variant pattern
+│   │   │                            # checks (each with a boundary-safety negative test),
+│   │   │                            # merge logic (shorter canonical, union aliases, longest
+│   │   │                            # description), multi-candidate ranking/fallthrough, an
+│   │   │                            # acronym-collision case that reaches the LLM rather than
+│   │   │                            # auto-merging. Real threshold calibration (see
+│   │   │                            # entity_resolver.py's tree comment) was done live against
+│   │   │                            # real embeddings/LLM calls, not re-run on every test pass.
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
@@ -1173,6 +1226,9 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 200
     entity_confidence_threshold: float = 0.5
     relation_confidence_threshold: float = 0.5
+    entity_resolution_fuzzy_threshold: float = 0.85
+    entity_resolution_embedding_threshold: float = 0.55  # not the ticket's 0.90 — see
+                                                          # entity_resolver.py's tree comment
 
     # File storage
     upload_dir: str = "./data/uploads"

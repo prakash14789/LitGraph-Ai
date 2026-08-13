@@ -129,3 +129,31 @@ def relation_extraction_cross_user_prompt(
         f"Candidate entities from OTHER papers:\n{candidates_block}\n\n"
         f"Section text:\n{section_text}"
     )
+
+
+# EXTRACT-003 — entity resolution's last-resort disambiguation step. Only
+# called for candidates that already passed fuzzy-name or embedding-
+# similarity matching (see entity_resolver.py) — this prompt's whole job is
+# telling apart a genuine match from a same-name/similar-description
+# coincidence (e.g. "BERT" the language model vs. "BERT" someone's name).
+ENTITY_RESOLUTION_VERIFICATION_PROMPT = """You are verifying whether two entity mentions, extracted from different research papers, refer to the SAME real-world entity — not just similar-looking names or descriptions.
+
+Answer NO if they are different things that merely share a name or wording — a reused acronym, a common word, or two genuinely distinct methods/datasets that happen to sound alike or be described similarly. Answer YES only if they are truly the same underlying method, dataset, or concept, even if named or described slightly differently (an abbreviation, a fuller name, a paraphrase).
+
+Respond with exactly two lines, nothing else:
+DECISION: YES
+REASON: one short sentence explaining why
+
+(or DECISION: NO with its own reason)"""
+
+
+def entity_resolution_verification_user_prompt(
+    name_a: str, type_a: str, description_a: str, name_b: str, type_b: str, description_b: str
+) -> str:
+    return (
+        f'Entity A: "{name_a}" ({type_a})\n'
+        f"Description A: {description_a or '(no description given)'}\n\n"
+        f'Entity B: "{name_b}" ({type_b})\n'
+        f"Description B: {description_b or '(no description given)'}\n\n"
+        "Are Entity A and Entity B the same real-world entity?"
+    )
