@@ -475,7 +475,33 @@ litgraph/
 │   │   │                        # against real Neo4j: 2-hop traversal, paper_id seed
 │   │   │                        # resolution, type filtering, unknown-type short-circuit,
 │   │   │                        # confidence-ordered node capping, empty-seed fallback.
-│   │   │   ├── hybrid_scorer.py     # Combine vector + graph scores → ranked results
+│   │   │                        # Subgraph gained a `seed_ids` field this same ticket (the
+│   │   │                        # elementIds actually used to seed the traversal) — added so
+│   │   │                        # RETRIEVAL-003's BFS distance calculation gets its distance-0
+│   │   │                        # anchors for free instead of re-running the paper_id lookup.
+│   │   │   ├── hybrid_scorer.py     # Built RETRIEVAL-003 — score_subgraph(subgraph, seeds,
+│   │   │   │                        # top_k, alpha, beta, gamma) implements the ticket's formula
+│   │   │   │                        # exactly: alpha*vector_similarity + beta*(1/graph_distance)
+│   │   │   │                        # + gamma*avg_edge_confidence. vector_similarity comes
+│   │   │   │                        # straight off an EntitySeed's own score for a node that IS
+│   │   │   │                        # one; for a Paper node, from the best-scoring ChunkSeed
+│   │   │   │                        # sharing its paper_id (the paper was seeded because that
+│   │   │   │                        # chunk matched, so its score is the paper's best available
+│   │   │   │                        # evidence) — anything reached purely by traversal gets 0.0.
+│   │   │   │                        # graph_distance is a plain multi-source BFS over the
+│   │   │   │                        # subgraph's own edges (undirected, matching how
+│   │   │   │                        # graph_retriever's own traversal pattern works), seeded from
+│   │   │   │                        # Subgraph.seed_ids at distance 0 — clamped to 1 before the
+│   │   │   │                        # division since the ticket's literal 1/graph_distance can't
+│   │   │   │                        # express distance 0 without dividing by zero.
+│   │   │   │                        # avg_edge_confidence is the mean `confidence` property (0.0
+│   │   │   │                        # default, same as graph_retriever's own coalesce) over
+│   │   │   │                        # every subgraph edge touching that node. Ties broken by the
+│   │   │   │                        # ticket's own explicit Method > Paper > Dataset preference
+│   │   │   │                        # (anything else — Author, Metric, Claim — sorts last).
+│   │   │   │                        # top_k/weights default to settings.context_max_nodes/
+│   │   │   │                        # hybrid_alpha/beta/gamma (env-configurable per the ticket)
+│   │   │   │                        # but both are overridable per call.
 │   │   │   └── context_builder.py   # Subgraph → structured text context for LLM
 │   │   │
 │   │   ├── generation/              # Context → Answer
@@ -656,7 +682,14 @@ litgraph/
 │   │   │                            # empty-graph fallback to chunks-only, paper_ids dedup when
 │   │   │                            # the same paper appears via both an entity's source_papers
 │   │   │                            # and a chunk's own paper_id, fully-empty-corpus case.
-│   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
+│   │   ├── test_hybrid_scorer.py    # Built RETRIEVAL-003 — pure computation over hand-built
+│   │   │                            # Subgraph/SeedResult fixtures, no I/O needed (unlike
+│   │   │                            # graph_writer.py/graph_retriever.py, this module never
+│   │   │                            # touches Neo4j/Chroma itself). 5 tests: all three signals
+│   │   │                            # combine per the formula, weights overridable per call,
+│   │   │                            # output ranked with top_k truncation dropping edges to
+│   │   │                            # excluded nodes, ties broken by Method > Paper > Dataset,
+│   │   │                            # a Paper node inheriting its best matching chunk's score.
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
 │   ├── integration/
 │   │   ├── __init__.py               # Added RETRIEVAL-001 (alongside tests/__init__.py and

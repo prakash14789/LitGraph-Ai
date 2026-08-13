@@ -93,6 +93,8 @@ class GraphEdge:
 class Subgraph:
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    seed_ids: list[str]  # resolved elementIds actually used to seed the traversal — RETRIEVAL-003
+    # needs these back (as its BFS distance-0 anchors) without re-running the paper_id lookup itself
 
 
 async def retrieve_subgraph(
@@ -103,17 +105,16 @@ async def retrieve_subgraph(
     max_nodes: int = _MAX_NODES,
 ) -> Subgraph:
     hops = max(1, min(4, hops or settings.graph_traversal_hops))
+    seed_ids = await _resolve_seed_ids(seeds)
+    if not seed_ids:
+        return Subgraph(nodes=[], edges=[], seed_ids=[])
 
     type_filter = ""
     if relationship_types is not None:
         valid_types = _KNOWN_REL_TYPES & set(relationship_types)
         if not valid_types:  # every requested type was unknown/invalid — match nothing
-            return Subgraph(nodes=[], edges=[])
+            return Subgraph(nodes=[], edges=[], seed_ids=seed_ids)
         type_filter = ":" + "|".join(sorted(valid_types))
-
-    seed_ids = await _resolve_seed_ids(seeds)
-    if not seed_ids:
-        return Subgraph(nodes=[], edges=[])
 
     driver = get_driver()
     async with driver.session() as session:
@@ -124,7 +125,7 @@ async def retrieve_subgraph(
         )
         rows = [record async for record in result]
 
-    return _cap_subgraph(rows, set(seed_ids), entity_types, max_nodes)
+    return _cap_subgraph(rows, set(seed_ids), entity_types, max_nodes, seed_ids)
 
 
 async def _resolve_seed_ids(seeds: SeedResult) -> list[str]:
@@ -143,7 +144,11 @@ async def _resolve_seed_ids(seeds: SeedResult) -> list[str]:
 
 
 def _cap_subgraph(
-    rows, seed_ids: set[str], entity_types: list[str] | None, max_nodes: int
+    rows,
+    seed_ids: set[str],
+    entity_types: list[str] | None,
+    max_nodes: int,
+    all_seed_ids: list[str],
 ) -> Subgraph:
     nodes: dict[str, GraphNode] = {}
     edges: list[GraphEdge] = []
@@ -164,7 +169,7 @@ def _cap_subgraph(
         nodes.setdefault(b_id, GraphNode(b_id, row["b_labels"], _clean_props(row["b_props"])))
         edges.append(GraphEdge(a_id, b_id, row["rel_type"], dict(row["rel_props"])))
 
-    return Subgraph(nodes=list(nodes.values()), edges=edges)
+    return Subgraph(nodes=list(nodes.values()), edges=edges, seed_ids=all_seed_ids)
 
 
 def _clean_props(props: dict) -> dict:
