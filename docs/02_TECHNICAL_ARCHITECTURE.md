@@ -1044,13 +1044,25 @@ litgraph/
 │       │   │                          # imply filtering; add once POLISH-005b lands per-
 │       │   │                          # collection retrieval.
 │       │   ├── GraphPage.tsx         # Placeholder — real graph explorer lands GRAPH-002/003
-│       │   ├── PapersPage.tsx        # Placeholder — real upload/list UI lands FE-002
+│       │   ├── PapersPage.tsx        # FE-002: native drag-and-drop upload zone (no react-
+│       │   │                          # dropzone — HTML5 DnD events cover the AC), paper list
+│       │   │                          # polling GET /papers (not the per-job status endpoint —
+│       │   │                          # no job_id survives a page refresh) while anything is
+│       │   │                          # pending/processing, stats card, delete via
+│       │   │                          # window.confirm(). ArXiv URL input rendered disabled
+│       │   │                          # ("coming soon") — POST /ingest/arxiv is POLISH-004's
+│       │   │                          # scope and doesn't exist yet, so the ticket's own ArXiv
+│       │   │                          # AC is deliberately deferred rather than faked.
 │       │   └── ComparePage.tsx       # Placeholder — real side-by-side comparison lands COMPARE-001
 │       ├── store/
 │       │   └── chatStore.ts          # FE-003: Zustand store, owns the send/retry API-call
 │       │                              # logic (not just state) so ChatPage stays a dumb view.
 │       │                              # Session-only — no persist middleware, matches the
 │       │                              # ticket's own "preserved during session" AC, not more.
+│       ├── components/PaperDetailModal.tsx  # FE-002: native <dialog> (not a Radix Dialog —
+│       │                              # none installed yet) for X/Escape/outside-click close
+│       │                              # for free; entity tags colored via the entity.* tokens
+│       │                              # from FE-001's tailwind.config.js.
 │       ├── services/
 │       │   └── api.ts                # Axios client, VITE_API_URL base (04_FRONTEND_
 │       │                              # SPECIFICATION.md §7.1 — no auth interceptors, MVP has no
@@ -1061,7 +1073,8 @@ litgraph/
 │       │                              # against routes that would just 404.
 │       └── types/
 │           └── index.ts              # Mirrors src/api/schemas/query.py and papers.py's
-│                                      # PaperListItem — kept to what api.ts actually consumes
+│                                      # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
+│                                      # kept to what api.ts actually consumes
 │                                      # today, extended per-field as later pages need more.
 │
 ├── scripts/

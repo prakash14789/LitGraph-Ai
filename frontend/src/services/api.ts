@@ -1,6 +1,12 @@
 import axios from "axios";
 
-import type { CompareQueryResponse, Paper, QueryResponse, VanillaQueryResponse } from "@/types";
+import type {
+  CompareQueryResponse,
+  Paper,
+  PaperDetail,
+  QueryResponse,
+  VanillaQueryResponse,
+} from "@/types";
 
 // No auth interceptors — MVP has no authentication (Security §2.1), no
 // /auth/* API exists to call. Add JWT/cookie handling here only once one
@@ -57,7 +63,7 @@ export const litgraphApi = {
 
   // Papers
   getPapers: () => api.get<Paper[]>("/papers"),
-  getPaper: (id: string) => api.get<Paper>(`/papers/${id}`),
+  getPaper: (id: string) => api.get<PaperDetail>(`/papers/${id}`),
   deletePaper: (id: string) => api.delete(`/papers/${id}`),
 };
 

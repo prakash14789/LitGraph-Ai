@@ -82,3 +82,26 @@ export interface Paper {
   collection_id: string | null;
   created_at: string;
 }
+
+// Mirrors src/api/schemas/papers.py's PaperEntity/PaperRelationship/PaperDetail (FE-002).
+export interface PaperEntity {
+  id: string;
+  type: string;
+  name: string;
+}
+
+export interface PaperRelationship {
+  type: string;
+  source: string;
+  target: string;
+  properties: Record<string, unknown>;
+}
+
+export interface PaperDetail extends Paper {
+  abstract: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  sections: Record<string, unknown> | null;
+  entities: PaperEntity[];
+  relationships: PaperRelationship[];
+}
