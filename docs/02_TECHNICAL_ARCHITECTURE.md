@@ -212,7 +212,40 @@ litgraph/
 │   │   │   │                        # text below") as a reasonable defensive precaution for a
 │   │   │   │                        # genuine future case, but it wasn't fixing anything real
 │   │   │   │                        # this time.
-│   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
+│   │   │   ├── relation_extractor.py # Section → relationships (LLM-based) — built EXTRACT-002.
+│   │   │   │                        # Two passes per the ticket: extract_intra_paper_relations
+│   │   │   │                        # (USES_METHOD/EVALUATES_ON/INTRODUCES/REPORTS_RESULT — the
+│   │   │   │                        # paper to its own entities, no outside knowledge) and
+│   │   │   │                        # extract_cross_paper_relations (EXTENDS/OUTPERFORMS/
+│   │   │   │                        # CONTRADICTS/CITES — the paper's entities to a candidate
+│   │   │   │                        # list of entities from OTHER papers, standing in for a
+│   │   │   │                        # real Neo4j lookup until EXTRACT-004 exists). AUTHORED_BY
+│   │   │   │                        # is deliberately not extracted here — pdf_parser already
+│   │   │   │                        # parses paper.authors as structured data, nothing for an
+│   │   │   │                        # LLM to add. Cross-paper target is code-enforced to be one
+│   │   │   │                        # of the given candidates (not just prompt-instructed) — a
+│   │   │   │                        # model that invents one anyway gets filtered out rather
+│   │   │   │                        # than trusted. Shares parse-retry-once JSON handling with
+│   │   │   │                        # entity_extractor.py via the new src/utils/llm_json.py.
+│   │   │   │                        # Live-tested against the same 5 papers as EXTRACT-001,
+│   │   │   │                        # 2 rounds — caught and fixed 2 real issues: EVALUATES_ON's
+│   │   │   │                        # target was ambiguous (method vs dataset) and the model
+│   │   │   │                        # picked inconsistently across papers, fixed by requiring
+│   │   │   │                        # target=dataset explicitly; and the cross-paper pass
+│   │   │   │                        # over-linked to topically-plausible-but-unnamed candidates
+│   │   │   │                        # (e.g. "LSTM" just because it was in the candidate list,
+│   │   │   │                        # when the text only said "existing best results"), fixed
+│   │   │   │                        # by requiring the candidate be specifically named/
+│   │   │   │                        # identified, not just plausible. Known remaining
+│   │   │   │                        # limitation after both fixes: BERT's abstract still
+│   │   │   │                        # produced 4 OUTPERFORMS relations against a candidate
+│   │   │   │                        # "ELMo" that the given abstract text never names by name
+│   │   │   │                        # (factually true in the real world, but not strictly
+│   │   │   │                        # grounded in the literal given text) — the model's prior
+│   │   │   │                        # knowledge of well-known comparisons still leaks through
+│   │   │   │                        # sometimes on the cross-paper pass specifically. Not fully
+│   │   │   │                        # solved; flagged for EXTRACT-003/004 to reconsider if it
+│   │   │   │                        # proves problematic once real candidate lists exist.
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
 │   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
 │   │   │   └── pipeline.py          # Orchestrates parse -> chunk -> embed — built INGEST-006.
@@ -238,10 +271,12 @@ litgraph/
 │   │   │   ├── __init__.py
 │   │   │   ├── generator.py         # LLM call with graph context → cited answer
 │   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.) —
-│   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT built EXTRACT-001, ahead of
-│   │   │   │                        # this directory's own generator.py — entity_extractor.py
-│   │   │   │                        # (in ingestion/) imports from here per the ticket's file
-│   │   │   │                        # layout rather than keeping its own prompt local.
+│   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT (EXTRACT-001) and
+│   │   │   │                        # RELATION_EXTRACTION_INTRA_PROMPT/_CROSS_PROMPT
+│   │   │   │                        # (EXTRACT-002) built here, ahead of this directory's own
+│   │   │   │                        # generator.py — entity_extractor.py/relation_extractor.py
+│   │   │   │                        # (in ingestion/) import from here per the ticket's file
+│   │   │   │                        # layout rather than keeping prompts local to each module.
 │   │   │   └── faithfulness.py      # Check: does answer follow from context? (self-audit)
 │   │   │
 │   │   ├── vanilla_rag/             # Baseline comparison system — built INGEST-005
@@ -341,6 +376,11 @@ litgraph/
 │       │                            # anthropic/groq stay single-key. Switching provider
 │       │                            # entirely (e.g. to Groq once both Gemini keys are spent)
 │       │                            # is still manual — LLM_PROVIDER + a matching model name.
+│       ├── llm_json.py              # parse_json_response()/to_confidence() — pulled out of
+│       │                            # entity_extractor.py during EXTRACT-002 once
+│       │                            # relation_extractor.py needed the exact same "strip
+│       │                            # markdown fences, fall back to the outermost {...} block"
+│       │                            # recovery logic — one shared helper instead of two copies.
 │       └── logging.py               # Structured logging setup
 │
 ├── tests/
@@ -373,6 +413,16 @@ litgraph/
 │   │   │                            # Real prompt-quality verification against 5 live papers was
 │   │   │                            # done separately (see entity_extractor.py's tree comment) —
 │   │   │                            # not re-run on every test pass, real Gemini calls cost quota.
+│   │   ├── test_relation_extractor.py # Built EXTRACT-002 — mocked LLM, covers both passes:
+│   │   │                            # intra defaulting source to "paper", EVALUATES_ON keeping
+│   │   │                            # metric/value/method in properties, OUTPERFORMS keeping
+│   │   │                            # metric/dataset/margin, cross-paper target filtered to the
+│   │   │                            # given candidate list (code-enforced, not just prompted),
+│   │   │                            # confidence filtering, retry-once-then-empty. Real
+│   │   │                            # prompt-quality verification (2 rounds, live) against the
+│   │   │                            # same 5 papers as EXTRACT-001 was done separately — see
+│   │   │                            # relation_extractor.py's tree comment for the 2 real issues
+│   │   │                            # it caught and fixed.
 │   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004

@@ -14,8 +14,6 @@ Never raises on a bad response — one malformed section shouldn't fail the
 whole paper's extraction (same contract as pdf_parser.parse_pdf).
 """
 
-import json
-import re
 from dataclasses import dataclass, field
 
 import structlog
@@ -26,12 +24,11 @@ from src.services.generation.prompts import (
     entity_extraction_user_prompt,
 )
 from src.utils import llm_client
+from src.utils.llm_json import parse_json_response, to_confidence
 
 logger = structlog.get_logger()
 
 _CLAIM_TYPES = {"RESULT", "HYPOTHESIS", "LIMITATION", "FUTURE_WORK"}
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 @dataclass
@@ -78,11 +75,11 @@ def extract_entities(section_name: str, section_text: str) -> SectionExtraction:
         return SectionExtraction()
 
     user_prompt = entity_extraction_user_prompt(section_name, section_text)
-    data = _parse_json(_call_llm(user_prompt))
+    data = parse_json_response(_call_llm(user_prompt))
     if data is None:
         # One retry — a fresh sample sometimes recovers from a one-off
         # formatting slip (stray prose around the JSON, a truncated object).
-        data = _parse_json(_call_llm(user_prompt))
+        data = parse_json_response(_call_llm(user_prompt))
     if data is None:
         logger.error("entity_extractor.unparseable_response", section=section_name)
         return SectionExtraction()
@@ -100,27 +97,6 @@ def _call_llm(user_prompt: str) -> str:
     )
 
 
-def _parse_json(raw: str) -> dict | None:
-    text = raw.strip()
-    fence = _JSON_FENCE_RE.match(text)
-    if fence:
-        text = fence.group(1)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # The model occasionally wraps the JSON in a sentence or two despite
-    # instructions not to — grab the outermost {...} block instead of
-    # giving up outright.
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-
-
 def _to_extraction(data: dict) -> SectionExtraction:
     if not isinstance(data, dict):
         return SectionExtraction()
@@ -130,7 +106,7 @@ def _to_extraction(data: dict) -> SectionExtraction:
             name=str(m["name"]).strip(),
             description=str(m.get("description", "")).strip(),
             category=str(m.get("category", "")).strip(),
-            confidence=_to_confidence(m.get("confidence")),
+            confidence=to_confidence(m.get("confidence")),
         )
         for m in data.get("methods", [])
         if isinstance(m, dict) and m.get("name")
@@ -139,7 +115,7 @@ def _to_extraction(data: dict) -> SectionExtraction:
         ExtractedDataset(
             name=str(d["name"]).strip(),
             domain=str(d.get("domain", "")).strip(),
-            confidence=_to_confidence(d.get("confidence")),
+            confidence=to_confidence(d.get("confidence")),
         )
         for d in data.get("datasets", [])
         if isinstance(d, dict) and d.get("name")
@@ -150,7 +126,7 @@ def _to_extraction(data: dict) -> SectionExtraction:
             value=str(m.get("value", "")).strip(),
             method=(str(m["method"]).strip() if m.get("method") else None),
             dataset=(str(m["dataset"]).strip() if m.get("dataset") else None),
-            confidence=_to_confidence(m.get("confidence")),
+            confidence=to_confidence(m.get("confidence")),
         )
         for m in data.get("metrics", [])
         if isinstance(m, dict) and m.get("name")
@@ -159,7 +135,7 @@ def _to_extraction(data: dict) -> SectionExtraction:
         ExtractedClaim(
             text=str(c["text"]).strip(),
             claim_type=str(c.get("type", "")).strip().upper(),
-            confidence=_to_confidence(c.get("confidence")),
+            confidence=to_confidence(c.get("confidence")),
         )
         for c in data.get("claims", [])
         if isinstance(c, dict) and c.get("text")
@@ -175,10 +151,3 @@ def _to_extraction(data: dict) -> SectionExtraction:
         metrics=[m for m in metrics if m.confidence >= threshold],
         claims=[c for c in claims if c.confidence >= threshold],
     )
-
-
-def _to_confidence(value: object) -> float:
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return 0.0
