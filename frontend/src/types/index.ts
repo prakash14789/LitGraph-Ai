@@ -105,3 +105,35 @@ export interface PaperDetail extends Paper {
   entities: PaperEntity[];
   relationships: PaperRelationship[];
 }
+
+// Mirrors src/api/schemas/graph.py (GRAPH-001).
+export interface GraphOverview {
+  total_nodes: number;
+  total_edges: number;
+  node_counts: Record<string, number>;
+  edge_counts: Record<string, number>;
+}
+
+export interface GraphNode {
+  id: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+  usage_count: number | null;
+}
+
+export interface GraphSubgraphResponse {
+  nodes: GraphNode[];
+  edges: SubgraphEdge[]; // same source/target/rel_type/properties shape, reused as-is
+}
+
+export interface SearchResultItem {
+  id: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+  name: string | null;
+  score: number;
+}
+
+export interface SearchResponse {
+  results: SearchResultItem[];
+}

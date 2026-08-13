@@ -1062,7 +1062,10 @@ litgraph/
 │       │   │                          # selector here would either do nothing or misleadingly
 │       │   │                          # imply filtering; add once POLISH-005b lands per-
 │       │   │                          # collection retrieval.
-│       │   ├── GraphPage.tsx         # Placeholder — real graph explorer lands GRAPH-002/003
+│       │   ├── GraphPage.tsx         # GRAPH-002: search box + GraphCanvas — a minimal real
+│       │   │                          # consumer proving the canvas actually works end to end,
+│       │   │                          # not the full toolbar/filters/legend/entity-sidebar page
+│       │   │                          # (that's GRAPH-003's separate 2-day scope).
 │       │   ├── PapersPage.tsx        # FE-002: native drag-and-drop upload zone (no react-
 │       │   │                          # dropzone — HTML5 DnD events cover the AC), paper list
 │       │   │                          # polling GET /papers (not the per-job status endpoint —
@@ -1080,13 +1083,44 @@ litgraph/
 │       │                              # ticket's own "preserved during session" AC, not more.
 │       │                              # ChatMessage also carries retrievedSubgraph (FE-004)
 │       │                              # straight from QueryResponse, no separate fetch.
-│       ├── lib/entityColors.ts       # Entity-label -> Tailwind border/text class map + a
-│       │                              # displayName() properties fallback chain — centralized
-│       │                              # (FE-004) once a 3rd consumer (ContextPanel) needed the
-│       │                              # same map PaperDetailModal/EntityDetailModal already had.
+│       ├── lib/
+│       │   ├── entityColors.ts       # Entity-label -> Tailwind border/text class map + a
+│       │   │                          # displayName() properties fallback chain — centralized
+│       │   │                          # (FE-004) once a 3rd consumer (ContextPanel) needed the
+│       │   │                          # same map PaperDetailModal/EntityDetailModal already had.
+│       │   ├── graphElements.ts      # GRAPH-002: node/edge styling tables (04_FRONTEND_
+│       │   │                          # SPECIFICATION.md §4.3) + the pure nodes/edges ->
+│       │   │                          # Cytoscape-elements mapping (nodeSize/edgeLabel/
+│       │   │                          # toElements), split out of GraphCanvas.tsx so it's
+│       │   │                          # testable without mounting a real DOM/Cytoscape instance.
+│       │   │                          # Uses explicit `.ts`-extension relative imports
+│       │   │                          # (allowImportingTsExtensions) — graphElements.check.ts
+│       │   │                          # runs directly under plain `node`, no bundler to resolve
+│       │   │                          # extension-less specifiers for it.
+│       │   └── graphElements.check.ts # Manual self-check (assert-based, no test framework in
+│       │                              # this project) for graphElements.ts's branching logic —
+│       │                              # Claim's fixed size, usage_count sqrt-scaling/clamping,
+│       │                              # EVALUATES_ON/OUTPERFORMS's property-built labels,
+│       │                              # toElements dropping an edge that points outside the
+│       │                              # given node set. Run: `node src/lib/graphElements.check.ts`
 │       ├── components/
 │       │   ├── PaperDetailModal.tsx  # FE-002: native <dialog> (not a Radix Dialog — none
 │       │   │                          # installed yet) for X/Escape/outside-click close for free.
+│       │   ├── GraphCanvas.tsx       # GRAPH-002: Cytoscape.js wrapper, shared by FE-004's mini
+│       │   │                          # panel and GRAPH-003's full explorer. Built-in `cose`
+│       │   │                          # layout (force-directed, ships with cytoscape core — no
+│       │   │                          # extra layout plugin dependency). Double-click-to-expand
+│       │   │                          # calls GET /graph/subgraph (GRAPH-001) itself, so every
+│       │   │                          # consumer gets the same expand behavior for free. Double-
+│       │   │                          # tap detected manually via a timestamp ref (300ms) —
+│       │   │                          # cytoscape has no native dblclick event. Hover tooltip is
+│       │   │                          # a plain positioned div (no cytoscape-popper/Tippy.js),
+│       │   │                          # repositioned via renderedPosition() on the node's own
+│       │   │                          # `position` event plus the core-level `pan`/`zoom` events
+│       │   │                          # (which don't fire through a delegated node selector, so
+│       │   │                          # the hovered id is tracked separately for those). Responsive
+│       │   │                          # via ResizeObserver -> cy.resize(). cytoscape ships its own
+│       │   │                          # TS types (no separate @types/cytoscape needed).
 │       │   ├── ContextPanel.tsx      # FE-004: sources list + color-coded entity tags for the
 │       │   │                          # latest answer, placeholder container for GRAPH-004's
 │       │   │                          # Cytoscape canvas (no Cytoscape code here — that ticket's
