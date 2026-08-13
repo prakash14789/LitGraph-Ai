@@ -141,9 +141,27 @@ litgraph/
 │   │   │   │                        # row; dispatching before commit risks the worker racing ahead
 │   │   │   │                        # of the transaction. Still atomic per-paper (see SETUP-004's
 │   │   │   │                        # atomicity note in 05_FEATURE_TICKETS.md).
-│   │   │   ├── query.py             # POST /query/vanilla — built INGEST-005. POST /query and
-│   │   │   │                        # /query/compare (graphrag, graphrag-vs-vanilla) land with
-│   │   │   │                        # RETRIEVAL-005/006, not built yet.
+│   │   │   ├── query.py             # POST /query/vanilla — built INGEST-005. POST /query —
+│   │   │   │                        # built RETRIEVAL-005: chains retrieve_seeds ->
+│   │   │   │                        # retrieve_subgraph -> score_subgraph -> build_context ->
+│   │   │   │                        # generate_graphrag_answer exactly as RETRIEVAL-001 through
+│   │   │   │                        # -004 built them. Citations are built from the graph data
+│   │   │   │                        # itself, not parsed out of the LLM's free-form answer:
+│   │   │   │                        # every Paper node that made the ranked subgraph, plus
+│   │   │   │                        # (title resolved via the same _paper_titles() helper
+│   │   │   │                        # /query/vanilla already uses) any paper that only surfaced
+│   │   │   │                        # through a chunk match and never made the ranked top-K —
+│   │   │   │                        # parsing citations out of prose would be fragile and
+│   │   │   │                        # couldn't guarantee the ticket's "citations match actual
+│   │   │   │                        # papers" criterion the way reading it straight off the
+│   │   │   │                        # graph does. retrieved_subgraph in the response is
+│   │   │   │                        # RankedSubgraph's nodes/edges as-is (with each node's score/
+│   │   │   │                        # vector_similarity/graph_distance/avg_edge_confidence, for
+│   │   │   │                        # future frontend use — GRAPH-viz epic). retrieval_stats
+│   │   │   │                        # covers the ticket's own "vector results, graph nodes, final
+│   │   │   │                        # context size" ask plus latency_ms. POST /query/compare
+│   │   │   │                        # (graphrag-vs-vanilla) lands with RETRIEVAL-006, not built
+│   │   │   │                        # yet.
 │   │   │   ├── graph.py             # GET /graph/subgraph, GET /graph/entity/{id}
 │   │   │   ├── papers.py            # GET /papers, GET /papers/{id}, DELETE /papers/{id} — built
 │   │   │   │                        # INGEST-007. Ticket depends on EXTRACT-004 (graph writer),
@@ -155,7 +173,10 @@ litgraph/
 │   │   │   └── collections.py       # CRUD for paper collections
 │   │   ├── schemas/                 # Pydantic request/response models
 │   │   │   ├── ingest.py            # UploadResult, JobStatusResponse — built INGEST-004
-│   │   │   ├── query.py             # VanillaQueryRequest/Response, SourceChunk — built INGEST-005
+│   │   │   ├── query.py             # VanillaQueryRequest/Response, SourceChunk — built INGEST-005.
+│   │   │   │                        # QueryRequest/Response, Citation, RetrievedSubgraphSchema
+│   │   │   │                        # (SubgraphNodeSchema/SubgraphEdgeSchema), RetrievalStats —
+│   │   │   │                        # built RETRIEVAL-005 for POST /query.
 │   │   │   ├── graph.py
 │   │   │   └── papers.py            # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
 │   │   │                            # built INGEST-007
@@ -537,7 +558,26 @@ litgraph/
 │   │   │
 │   │   ├── generation/              # Context → Answer
 │   │   │   ├── __init__.py
-│   │   │   ├── generator.py         # LLM call with graph context → cited answer
+│   │   │   ├── generator.py         # Built RETRIEVAL-005 — generate_answer(query, context)
+│   │   │   │                        # takes context_builder.py's BuiltContext, asks the LLM for a
+│   │   │   │                        # cited answer. DB-free like vanilla_rag/generator.py: only
+│   │   │   │                        # sees context.text (paper titles/entity names/evidence
+│   │   │   │                        # already baked in by context_builder.py) — never needs a
+│   │   │   │                        # paper_id -> title lookup itself, since the route layer
+│   │   │   │                        # resolves citations separately from the same ranked
+│   │   │   │                        # subgraph, not by parsing this answer's prose (fragile, and
+│   │   │   │                        # can't guarantee the ticket's "citations match actual
+│   │   │   │                        # papers" criterion the way reading the graph data directly
+│   │   │   │                        # does). System prompt instructs: context-only, cite papers
+│   │   │   │                        # by name, reference the specific relationship/chunk, say "I
+│   │   │   │                        # don't know" rather than guess. Empty context (nothing
+│   │   │   │                        # retrieved from either the graph or vector search) skips the
+│   │   │   │                        # LLM call entirely and returns that same message directly —
+│   │   │   │                        # same defensive short-circuit vanilla_rag/generator.py
+│   │   │   │                        # already uses for zero chunks. Same `from src.utils import
+│   │   │   │                        # llm_client` + module-qualified call style as
+│   │   │   │                        # vanilla_rag/generator.py, required for the mock_llm_client
+│   │   │   │                        # test fixture (module-attribute monkeypatch) to intercept it.
 │   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.) —
 │   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT (EXTRACT-001),
 │   │   │   │                        # RELATION_EXTRACTION_INTRA_PROMPT/_CROSS_PROMPT
@@ -721,17 +761,24 @@ litgraph/
 │   │   │                            # output ranked with top_k truncation dropping edges to
 │   │   │                            # excluded nodes, ties broken by Method > Paper > Dataset,
 │   │   │                            # a Paper node inheriting its best matching chunk's score.
-│   │   └── test_context_builder.py  # Built RETRIEVAL-004 — pure computation over hand-built
-│   │                                # RankedSubgraph/SeedResult fixtures, no I/O (same rationale
-│   │                                # as test_hybrid_scorer.py). 6 tests: Method's "introduced
-│   │                                # by Paper" annotation + evidence text on a generic relation
-│   │                                # line, EVALUATES_ON/OUTPERFORMS's metric/value/dataset/
-│   │                                # margin formatting matches the ticket's own example exactly,
-│   │                                # REPORTS_RESULT skips the redundant evidence suffix,
-│   │                                # AUTHORED_BY excluded from RELATIONSHIPS but its Author node
-│   │                                # still listed under ENTITIES, chunk inclusion + graceful
-│   │                                # truncation under a deliberately tight token budget, empty
-│   │                                # graph falling back to a chunks-only context.
+│   │   ├── test_context_builder.py  # Built RETRIEVAL-004 — pure computation over hand-built
+│   │   │                            # RankedSubgraph/SeedResult fixtures, no I/O (same rationale
+│   │   │                            # as test_hybrid_scorer.py). 6 tests: Method's "introduced
+│   │   │                            # by Paper" annotation + evidence text on a generic relation
+│   │   │                            # line, EVALUATES_ON/OUTPERFORMS's metric/value/dataset/
+│   │   │                            # margin formatting matches the ticket's own example exactly,
+│   │   │                            # REPORTS_RESULT skips the redundant evidence suffix,
+│   │   │                            # AUTHORED_BY excluded from RELATIONSHIPS but its Author node
+│   │   │                            # still listed under ENTITIES, chunk inclusion + graceful
+│   │   │                            # truncation under a deliberately tight token budget, empty
+│   │   │                            # graph falling back to a chunks-only context.
+│   │   └── test_graphrag_generator.py # Built RETRIEVAL-005 — mock_llm_client fixture, same
+│   │                                # pattern as test_generator.py (vanilla's). Named
+│   │                                # test_graphrag_generator.py, not test_generator.py, since
+│   │                                # both live in tests/unit/ and a directory can't hold two
+│   │                                # files with the same name. 2 tests: LLM called with the
+│   │                                # BuiltContext's text in the prompt, empty context skips the
+│   │                                # LLM call entirely and returns "I don't know" directly.
 │   ├── integration/
 │   │   ├── __init__.py               # Added RETRIEVAL-001 (alongside tests/__init__.py and
 │   │   │                             # tests/unit/__init__.py) — pytest's default import mode
@@ -839,6 +886,28 @@ litgraph/
 │   │   │                             # than silently matching everything, max_nodes keeps the
 │   │   │                             # highest-confidence edges first, empty seeds short-circuit
 │   │   │                             # without a Neo4j round-trip.
+│   │   ├── test_graphrag_query_api.py # Built RETRIEVAL-005 — real HTTP request through the real
+│   │   │                             # FastAPI app, real Postgres/Neo4j/ChromaDB, mocked LLM
+│   │   │                             # (mock_llm_client), same overall pattern test_query_api.py
+│   │   │                             # uses for /query/vanilla. Proves the full retrieve_seeds ->
+│   │   │                             # retrieve_subgraph -> score_subgraph -> build_context ->
+│   │   │                             # generate_answer chain actually connects end to end against
+│   │   │                             # real infrastructure, not just that each stage's own unit
+│   │   │                             # tests pass in isolation — hand-creates a real Paper+Method
+│   │   │                             # node + USES_METHOD edge in Neo4j, a matching Chroma entity
+│   │   │                             # embedding and chunk, and a matching Postgres Paper row,
+│   │   │                             # then asserts the response's answer/citations/
+│   │   │                             # retrieved_subgraph/retrieval_stats all reflect it. Setup/
+│   │   │                             # cleanup lives inline in the test (try/finally), not a
+│   │   │                             # shared autouse fixture — a first draft used one and its
+│   │   │                             # yield-based Neo4j cleanup ran *after*
+│   │   │                             # close_neo4j_driver_after_test had already closed the driver
+│   │   │                             # (fixture teardown order between an autouse fixture and a
+│   │   │                             # usefixtures-marked one isn't guaranteed), caught live via a
+│   │   │                             # "driver already closed" DeprecationWarning on an otherwise-
+│   │   │                             # passing run; rewritten to match test_graph_writer.py/
+│   │   │                             # test_graph_retriever.py's own inline try/finally pattern,
+│   │   │                             # which sidesteps the ordering question entirely.
 │   │   ├── test_retrieval_pipeline.py
 │   │   └── test_graph_queries.py
 │   └── eval/
