@@ -183,7 +183,27 @@ litgraph/
 │   │   │   │                        # embed calls (100/batch, one API call per batch not per
 │   │   │   │                        # chunk). Skips re-embedding if paper_id already has chunks
 │   │   │   │                        # stored (checked via collection.get(where={"paper_id":...}))
-│   │   │   ├── entity_extractor.py  # Chunk/section → entities (LLM-based)
+│   │   │   ├── entity_extractor.py  # Section → entities (LLM-based) — built EXTRACT-001.
+│   │   │   │                        # Operates on pdf_parser's raw section text, not chunker's
+│   │   │   │                        # ~1000-token chunks — a whole section gives the model more
+│   │   │   │                        # context to attribute a metric to the right method/dataset.
+│   │   │   │                        # One retry on unparseable JSON (markdown fences and
+│   │   │   │                        # prose-wrapped JSON are stripped first); still-unparseable
+│   │   │   │                        # after the retry returns an empty extraction rather than
+│   │   │   │                        # failing the paper — same never-raises contract as
+│   │   │   │                        # pdf_parser.parse_pdf. Filters out anything below
+│   │   │   │                        # entity_confidence_threshold and any claim whose "type"
+│   │   │   │                        # isn't one of the schema's 4 values. Live-tested against 5
+│   │   │   │                        # real papers (Attention, BERT, ResNet, Adam, a GAN survey)
+│   │   │   │                        # covering survey-style/many-methods and math-heavy edge
+│   │   │   │                        # cases — measured precision well above the 80% bar, JSON
+│   │   │   │                        # parsed cleanly on every real call. Caught and fixed one
+│   │   │   │                        # real bug this way: on a very well-known paper's abstract,
+│   │   │   │                        # the model injected details (e.g. "scaled dot-product
+│   │   │   │                        # attention") from its own training-data memory of the paper
+│   │   │   │                        # rather than the literal text given — fixed with an explicit
+│   │   │   │                        # closed-book instruction in the prompt ("ignore what you
+│   │   │   │                        # recall about this paper, extract only from the text below").
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
 │   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
@@ -209,7 +229,11 @@ litgraph/
 │   │   ├── generation/              # Context → Answer
 │   │   │   ├── __init__.py
 │   │   │   ├── generator.py         # LLM call with graph context → cited answer
-│   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.)
+│   │   │   ├── prompts.py           # All prompt templates (extraction, generation, etc.) —
+│   │   │   │                        # ENTITY_EXTRACTION_SYSTEM_PROMPT built EXTRACT-001, ahead of
+│   │   │   │                        # this directory's own generator.py — entity_extractor.py
+│   │   │   │                        # (in ingestion/) imports from here per the ticket's file
+│   │   │   │                        # layout rather than keeping its own prompt local.
 │   │   │   └── faithfulness.py      # Check: does answer follow from context? (self-audit)
 │   │   │
 │   │   ├── vanilla_rag/             # Baseline comparison system — built INGEST-005
@@ -327,7 +351,13 @@ litgraph/
 │   │   ├── test_retriever.py        # Built INGEST-005 — mocked Chroma response
 │   │   ├── test_generator.py        # Built INGEST-005 — mock_llm_client fixture
 │   │   ├── test_embedder.py         # Built INGEST-005 — warm_up()'s provider branching only
-│   │   ├── test_entity_extractor.py # Not built yet — lands with EXTRACT-001
+│   │   ├── test_entity_extractor.py # Built EXTRACT-001 — mocked LLM (mock_llm_client), covers
+│   │   │                            # JSON parsing (plain/fenced/prose-wrapped), confidence-
+│   │   │                            # threshold filtering, invalid-claim-type dropping, the
+│   │   │                            # retry-once-then-empty behavior on unparseable responses.
+│   │   │                            # Real prompt-quality verification against 5 live papers was
+│   │   │                            # done separately (see entity_extractor.py's tree comment) —
+│   │   │                            # not re-run on every test pass, real Gemini calls cost quota.
 │   │   ├── test_entity_resolver.py  # Not built yet — lands with EXTRACT-003
 │   │   ├── test_hybrid_scorer.py    # Not built yet — lands with RETRIEVAL-003
 │   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
