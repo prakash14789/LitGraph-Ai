@@ -6,7 +6,7 @@ import httpx
 import pytest
 from openai import AuthenticationError, RateLimitError
 
-from src.utils.llm_client import _RateLimiter, complete
+from src.utils.llm_client import _KeyRing, _RateLimiter, complete
 
 
 def _http_error(cls, status_code: int):
@@ -21,9 +21,15 @@ def _fake_response(text: str = "ok"):
     return response
 
 
+# _key_ring is a module-level singleton that permanently advances on quota
+# errors (by design — see its docstring) — every test patches it fresh so
+# one test's rotation can't bleed into the next.
+
+
 @patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["only-key"]))
 @patch("src.utils.llm_client._client")
-def test_complete_retries_then_succeeds(mock_client, mock_sleep=None):
+def test_complete_retries_then_succeeds(mock_client):
     client = MagicMock()
     client.chat.completions.create.side_effect = [
         _http_error(RateLimitError, 429),
@@ -39,6 +45,7 @@ def test_complete_retries_then_succeeds(mock_client, mock_sleep=None):
 
 
 @patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["only-key"]))
 @patch("src.utils.llm_client._client")
 def test_complete_does_not_retry_auth_error(mock_client):
     client = MagicMock()
@@ -49,6 +56,58 @@ def test_complete_does_not_retry_auth_error(mock_client):
         complete("sys", "user", model="gemini-2.5-flash")
 
     assert client.chat.completions.create.call_count == 1
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["key-1", "key-2"]))
+@patch("src.utils.llm_client._client")
+def test_quota_error_switches_key_without_backoff_or_raising(mock_client):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _http_error(RateLimitError, 429),
+        _fake_response("answer from key 2"),
+    ]
+    mock_client.return_value = client
+
+    with patch("time.sleep") as mock_sleep:
+        result = complete("sys", "user", model="gemini-flash-latest")
+
+    assert result == "answer from key 2"
+    mock_sleep.assert_not_called()  # key switch is immediate, no backoff wait
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["key-1", "key-2"]))
+@patch("src.utils.llm_client._client")
+def test_quota_error_falls_back_to_backoff_once_all_keys_exhausted(mock_client):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _http_error(RateLimitError, 429),  # key-1 exhausted, switches to key-2
+        _http_error(RateLimitError, 429),  # key-2 also exhausted, no more keys
+        _fake_response("recovered on backoff retry"),
+    ]
+    mock_client.return_value = client
+
+    with patch("time.sleep") as mock_sleep:
+        result = complete("sys", "user", model="gemini-flash-latest")
+
+    assert result == "recovered on backoff retry"
+    assert client.chat.completions.create.call_count == 3
+    mock_sleep.assert_called_once()  # only the post-exhaustion retry backs off
+
+
+def test_key_ring_advances_forward_and_never_wraps():
+    ring = _KeyRing(["key-1", "key-2"])
+    assert ring.current() == "key-1"
+    assert ring.advance() is True
+    assert ring.current() == "key-2"
+    assert ring.advance() is False  # no more keys
+    assert ring.current() == "key-2"  # stays put, doesn't wrap back to key-1
+
+
+def test_key_ring_single_key_never_advances():
+    ring = _KeyRing(["only-key"])
+    assert ring.advance() is False
 
 
 def test_rate_limiter_throttles_when_limit_hit():

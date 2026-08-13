@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: Literal["gemini", "openai", "anthropic"] = "gemini"
     gemini_api_key: str = ""
+    # Optional 2nd Gemini key — llm_client.py switches to it automatically
+    # once gemini_api_key hits a 429 quota error. A free key's daily cap can
+    # be as low as ~20 requests for a given model (measured live, EXTRACT-001)
+    # — far stricter than the RPM limit below, and not something backoff
+    # retries fix (waiting a minute doesn't refill a daily quota).
+    gemini_api_key_fallback: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini

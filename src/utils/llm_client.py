@@ -7,7 +7,6 @@ LLM_PROVIDER; switching is a config change only.
 """
 
 import time
-from functools import lru_cache
 
 import structlog
 from openai import (
@@ -29,20 +28,50 @@ _BASE_URLS = {
     "anthropic": "https://api.anthropic.com/v1/",
 }
 
+# Only Gemini has a fallback key today — the free tier's daily quota (as low
+# as ~20 requests/model, measured live) is what makes this worth having.
+# openai/anthropic are single-key: paid keys don't hit the same wall, and
+# adding rotation for providers nobody's rate-limited on yet is speculative.
 _API_KEYS = {
-    "gemini": settings.gemini_api_key,
-    "openai": settings.openai_api_key,
-    "anthropic": settings.anthropic_api_key,
+    "gemini": [k for k in [settings.gemini_api_key, settings.gemini_api_key_fallback] if k],
+    "openai": [settings.openai_api_key],
+    "anthropic": [settings.anthropic_api_key],
 }
 
-_RETRYABLE = (RateLimitError, APITimeoutError, APIConnectionError)
-_MAX_ATTEMPTS = 3
+
+class _KeyRing:
+    """Walks forward through a provider's key list on quota errors and never
+    goes back — once a key's daily quota is hit, there's no point retrying it
+    again this process's lifetime (a fixed backoff won't refill a daily
+    quota). Persists across calls (module-level singleton): after the first
+    switch, every subsequent complete() call goes straight to the working key
+    instead of re-discovering the exhausted one every time."""
+
+    def __init__(self, keys: list[str]):
+        self._keys = keys or [""]  # keep indexable even if misconfigured
+        self._index = 0
+
+    def current(self) -> str:
+        return self._keys[self._index]
+
+    def advance(self) -> bool:
+        """Moves to the next key. Returns False if there isn't one (caller
+        should fall back to backoff-retrying the current key)."""
+        if self._index + 1 >= len(self._keys):
+            return False
+        self._index += 1
+        logger.warning("llm.key_rotated", provider=settings.llm_provider, key_index=self._index)
+        return True
 
 
-@lru_cache(maxsize=1)
+_key_ring = _KeyRing(_API_KEYS[settings.llm_provider])
+
+
 def _client() -> OpenAI:
-    provider = settings.llm_provider
-    return OpenAI(api_key=_API_KEYS[provider], base_url=_BASE_URLS[provider])
+    # Not cached: a rotated key must produce a fresh client on the very next
+    # call, and constructing an OpenAI() instance does no network I/O — the
+    # cache was saving essentially nothing.
+    return OpenAI(api_key=_key_ring.current(), base_url=_BASE_URLS[settings.llm_provider])
 
 
 class _RateLimiter:
@@ -69,6 +98,10 @@ class _RateLimiter:
 _rate_limiter = _RateLimiter(settings.llm_rate_limit_rpm)
 
 
+_RETRYABLE = (APITimeoutError, APIConnectionError)
+_MAX_ATTEMPTS = 3
+
+
 def complete(
     system_prompt: str,
     user_prompt: str,
@@ -78,15 +111,19 @@ def complete(
 ) -> str:
     """Send one chat completion, return the text.
 
-    Retries transient errors (rate limit / timeout / connection) up to
-    _MAX_ATTEMPTS with exponential backoff. Auth and bad-request errors fail
-    immediately — retrying won't fix a bad key or a content-policy rejection.
+    A quota/rate-limit error first tries switching to the next configured key
+    (unlimited swaps — bounded by how many keys exist, not by _MAX_ATTEMPTS,
+    since a fresh key/quota deserves an immediate retry, not a backoff wait).
+    Once there's no next key, and for plain transient errors (timeout/
+    connection), retries up to _MAX_ATTEMPTS with exponential backoff. Auth
+    and bad-request errors fail immediately — retrying won't fix a bad key or
+    a content-policy rejection.
     """
-    client = _client()
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    backoff_attempt = 0
+    while True:
         _rate_limiter.wait()
         try:
-            response = client.chat.completions.create(
+            response = _client().chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -106,10 +143,19 @@ def complete(
             return response.choices[0].message.content or ""
         except (AuthenticationError, BadRequestError):
             raise
-        except _RETRYABLE:
-            if attempt == _MAX_ATTEMPTS:
+        except RateLimitError:
+            if _key_ring.advance():
+                continue
+            backoff_attempt += 1
+            if backoff_attempt >= _MAX_ATTEMPTS:
                 raise
-            backoff = 2**attempt
-            logger.warning("llm.retry", attempt=attempt, backoff_seconds=backoff)
+            backoff = 2**backoff_attempt
+            logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
             time.sleep(backoff)
-    raise RuntimeError("unreachable")  # loop above always returns or raises
+        except _RETRYABLE:
+            backoff_attempt += 1
+            if backoff_attempt >= _MAX_ATTEMPTS:
+                raise
+            backoff = 2**backoff_attempt
+            logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
+            time.sleep(backoff)

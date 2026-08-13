@@ -197,13 +197,21 @@ litgraph/
 │   │   │   │                        # real papers (Attention, BERT, ResNet, Adam, a GAN survey)
 │   │   │   │                        # covering survey-style/many-methods and math-heavy edge
 │   │   │   │                        # cases — measured precision well above the 80% bar, JSON
-│   │   │   │                        # parsed cleanly on every real call. Caught and fixed one
-│   │   │   │                        # real bug this way: on a very well-known paper's abstract,
-│   │   │   │                        # the model injected details (e.g. "scaled dot-product
-│   │   │   │                        # attention") from its own training-data memory of the paper
-│   │   │   │                        # rather than the literal text given — fixed with an explicit
-│   │   │   │                        # closed-book instruction in the prompt ("ignore what you
-│   │   │   │                        # recall about this paper, extract only from the text below").
+│   │   │   │                        # parsed cleanly on every real call. Initially misdiagnosed a
+│   │   │   │                        # suspected hallucination here (model output terms like
+│   │   │   │                        # "scaled dot-product attention" that aren't in the visible
+│   │   │   │                        # abstract paragraph) — re-checked the exact text the model
+│   │   │   │                        # actually received and found those terms genuinely present,
+│   │   │   │                        # in the page-1 author-contribution footnote that
+│   │   │   │                        # pdf_parser's "abstract" section bundles in alongside the
+│   │   │   │                        # abstract paragraph (everything before the next recognized
+│   │   │   │                        # header counts as one section). Not a bug — correct
+│   │   │   │                        # extraction from the literal given text the whole time. Left
+│   │   │   │                        # the closed-book instruction in the prompt anyway ("ignore
+│   │   │   │                        # what you recall about this paper, extract only from the
+│   │   │   │                        # text below") as a reasonable defensive precaution for a
+│   │   │   │                        # genuine future case, but it wasn't fixing anything real
+│   │   │   │                        # this time.
 │   │   │   ├── relation_extractor.py # Entities → relationships (LLM-based)
 │   │   │   ├── entity_resolver.py   # Deduplicate entities across papers
 │   │   │   ├── graph_writer.py      # Write entities + relationships to Neo4j
