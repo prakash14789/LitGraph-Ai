@@ -1015,7 +1015,11 @@ litgraph/
 │       ├── index.css                 # Tailwind directives + shadcn light/dark CSS variables —
 │       │                              # primary set to the brand blue (#2563EB) rather than
 │       │                              # shadcn's near-black default, dark theme pre-wired so
-│       │                              # POLISH-003's toggle is just a class swap
+│       │                              # POLISH-003's toggle is just a class swap. Also a small
+│       │                              # hand-rolled `.markdown` block (FE-003) styling react-
+│       │                              # markdown's output — chose this over adding the
+│       │                              # @tailwindcss/typography plugin since only 5 element
+│       │                              # kinds needed styling (headers/bold/italic/code/lists).
 │       ├── vite-env.d.ts
 │       ├── lib/
 │       │   └── utils.ts              # cn() — shadcn's standard clsx+tailwind-merge helper
@@ -1032,10 +1036,21 @@ litgraph/
 │       │                              # not all pre-built now with no caller (Card/Dialog/Badge/
 │       │                              # etc. per 04_FRONTEND_SPECIFICATION.md §3.4)
 │       ├── pages/
-│       │   ├── ChatPage.tsx          # Placeholder — real chat UI lands FE-003
+│       │   ├── ChatPage.tsx          # FE-003: message history, markdown answers, citation
+│       │   │                          # cards, auto-resize input, typing indicator, inline
+│       │   │                          # error+retry. No collection selector — retrieval is
+│       │   │                          # global (RETRIEVAL-001's MVP scoping decision), so a
+│       │   │                          # selector here would either do nothing or misleadingly
+│       │   │                          # imply filtering; add once POLISH-005b lands per-
+│       │   │                          # collection retrieval.
 │       │   ├── GraphPage.tsx         # Placeholder — real graph explorer lands GRAPH-002/003
 │       │   ├── PapersPage.tsx        # Placeholder — real upload/list UI lands FE-002
 │       │   └── ComparePage.tsx       # Placeholder — real side-by-side comparison lands COMPARE-001
+│       ├── store/
+│       │   └── chatStore.ts          # FE-003: Zustand store, owns the send/retry API-call
+│       │                              # logic (not just state) so ChatPage stays a dumb view.
+│       │                              # Session-only — no persist middleware, matches the
+│       │                              # ticket's own "preserved during session" AC, not more.
 │       ├── services/
 │       │   └── api.ts                # Axios client, VITE_API_URL base (04_FRONTEND_
 │       │                              # SPECIFICATION.md §7.1 — no auth interceptors, MVP has no
