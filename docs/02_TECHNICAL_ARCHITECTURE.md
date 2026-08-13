@@ -1,4 +1,4 @@
-# LitGraph — Technical Architecture Document
+﻿# LitGraph — Technical Architecture Document
 
 > **Version:** 1.0  
 > **Last Updated:** August 11, 2026  
@@ -502,7 +502,38 @@ litgraph/
 │   │   │   │                        # top_k/weights default to settings.context_max_nodes/
 │   │   │   │                        # hybrid_alpha/beta/gamma (env-configurable per the ticket)
 │   │   │   │                        # but both are overridable per call.
-│   │   │   └── context_builder.py   # Subgraph → structured text context for LLM
+│   │   │   └── context_builder.py   # Built RETRIEVAL-004 — build_context(ranked, seeds,
+│   │   │                        # max_tokens) turns RETRIEVAL-003's RankedSubgraph +
+│   │   │                        # RETRIEVAL-001's SeedResult.chunks into the ticket's exact
+│   │   │                        # ENTITIES/RELATIONSHIPS/RELEVANT TEXT CHUNKS text format.
+│   │   │                        # Entities grouped by type (Method/Dataset/Paper/Author/
+│   │   │                        # Metric/Claim first, per the ticket; anything else after),
+│   │   │                        # ranked-best-first within a group since RankedSubgraph.nodes
+│   │   │                        # already comes that way. A Method/Dataset's "introduced by
+│   │   │                        # Paper" annotation is read off an INTRODUCES edge already in
+│   │   │                        # the ranked subgraph (Paper is always its source, per
+│   │   │                        # relation_extractor.py's own prompt contract) and folded
+│   │   │                        # into the entity line rather than repeated as its own
+│   │   │                        # RELATIONSHIPS line; AUTHORED_BY is dropped from
+│   │   │                        # RELATIONSHIPS the same way (no evidence/confidence, not
+│   │   │                        # useful QA signal alone — the Author node itself still shows
+│   │   │                        # under ENTITIES). REPORTS_RESULT's target is a Claim node
+│   │   │                        # (pipeline.py synthesizes that edge from entity_extractor's
+│   │   │                        # claims directly, not relation_extractor's own text) — skips
+│   │   │                        # the generic "(evidence: ...)" suffix other types get, since
+│   │   │                        # the claim's own text already IS the evidence and repeating
+│   │   │                        # it would duplicate the same sentence on one line.
+│   │   │                        # Token budget (8K max, tiktoken's cl100k_base — same
+│   │   │                        # encoding chunker.py already uses): ENTITIES/RELATIONSHIPS
+│   │   │                        # are never trimmed (RETRIEVAL-003's top_k=20 cap keeps that
+│   │   │                        # section small in practice — ponytail: upgrade path if a
+│   │   │                        # pathological subgraph ever did blow the budget alone is
+│   │   │                        # dropping its lowest-ranked entities first). RELEVANT TEXT
+│   │   │                        # CHUNKS (already ranked best-first by vector_retriever/
+│   │   │                        # Chroma) are added one at a time, checking the real token
+│   │   │                        # count of the whole candidate text each time — exact against
+│   │   │                        # what's actually sent, not summed per-line estimates —
+│   │   │                        # stopping the moment one more would cross the limit.
 │   │   │
 │   │   ├── generation/              # Context → Answer
 │   │   │   ├── __init__.py
@@ -690,7 +721,17 @@ litgraph/
 │   │   │                            # output ranked with top_k truncation dropping edges to
 │   │   │                            # excluded nodes, ties broken by Method > Paper > Dataset,
 │   │   │                            # a Paper node inheriting its best matching chunk's score.
-│   │   └── test_context_builder.py  # Not built yet — lands with RETRIEVAL-004
+│   │   └── test_context_builder.py  # Built RETRIEVAL-004 — pure computation over hand-built
+│   │                                # RankedSubgraph/SeedResult fixtures, no I/O (same rationale
+│   │                                # as test_hybrid_scorer.py). 6 tests: Method's "introduced
+│   │                                # by Paper" annotation + evidence text on a generic relation
+│   │                                # line, EVALUATES_ON/OUTPERFORMS's metric/value/dataset/
+│   │                                # margin formatting matches the ticket's own example exactly,
+│   │                                # REPORTS_RESULT skips the redundant evidence suffix,
+│   │                                # AUTHORED_BY excluded from RELATIONSHIPS but its Author node
+│   │                                # still listed under ENTITIES, chunk inclusion + graceful
+│   │                                # truncation under a deliberately tight token budget, empty
+│   │                                # graph falling back to a chunks-only context.
 │   ├── integration/
 │   │   ├── __init__.py               # Added RETRIEVAL-001 (alongside tests/__init__.py and
 │   │   │                             # tests/unit/__init__.py) — pytest's default import mode
