@@ -253,6 +253,12 @@ litgraph/
 │   │   │   │                        # splitting tries numbered ([1]) and name-year styles, keeps
 │   │   │   │                        # whichever actually segmented — real reference parsing is
 │   │   │   │                        # what GROBID exists for (considered, not used — too heavy).
+│   │   │   │                        # EVAL-001 live finding: PyMuPDF occasionally extracts a NUL
+│   │   │   │                        # byte (0x00) from certain PDFs (ELECTRA's real arXiv PDF hit
+│   │   │   │                        # this) — Postgres's UTF8 columns reject it outright, and it
+│   │   │   │                        # was cascading into a 2nd unhandled failure inside pipeline.py's
+│   │   │   │                        # own error recovery (see pipeline.py's tree comment). Stripped
+│   │   │   │                        # once, here, so every downstream consumer never sees it.
 │   │   │   ├── chunker.py           # Sections → overlapping chunks — built INGEST-002.
 │   │   │   │                        # Sentence-boundary packing (tiktoken cl100k_base), sliding
 │   │   │   │                        # overlap between chunks. page_number resolved by searching
@@ -524,6 +530,24 @@ litgraph/
 │   │   │                            # caused the 413 above — measured live at only ~700 tokens for
 │   │   │                            # 79 real entities — but a real compounding cost across a
 │   │   │                            # multi-paper corpus either way).
+│   │   │                            #
+│   │   │                            # EVAL-001 (2026-08-14, ELECTRA's real arXiv PDF): a compounding
+│   │   │                            # double-failure that silently orphaned a job at "parsing"
+│   │   │                            # forever instead of marking it FAILED. PyMuPDF extracted a NUL
+│   │   │                            # byte (0x00) from the PDF (now stripped in pdf_parser.py); when
+│   │   │                            # Postgres's UTF8 columns rejected it, the failed flush expired
+│   │   │                            # every ORM object in the session, and this block's own recovery
+│   │   │                            # code then raised a SECOND, unhandled exception trying to use
+│   │   │                            # the session without rolling back first (PendingRollbackError),
+│   │   │                            # then once rollback() was added, a third failure mode reading
+│   │   │                            # paper.id off the now-expired object outside an awaited context
+│   │   │                            # (MissingGreenlet). Fixed by capturing paper_id as a plain str
+│   │   │                            # once up front (before the try block, so no post-rollback
+│   │   │                            # attribute read is ever needed) and calling
+│   │   │                            # await session.rollback() as the first statement in both
+│   │   │                            # except blocks, before any other session use. Covered by
+│   │   │                            # test_ingestion_pipeline.py's new
+│   │   │                            # test_pipeline_marks_failed_cleanly_on_db_write_error_mid_parse.
 │   │   │
 │   │   ├── retrieval/               # Query → Retrieved Context
 │   │   │   ├── __init__.py
@@ -762,7 +786,17 @@ litgraph/
 │   │   │                            # forever at extracting_entities, confirmed no partial Neo4j
 │   │   │                            # writes since graph writes only start after every section's
 │   │   │                            # entities finish extracting). Lower this back down once
-│   │   │                            # LLM_PROVIDER points at a faster/paid model.
+│   │   │                            # LLM_PROVIDER points at a faster/paid model. Raised again
+│   │   │                            # 3600s -> 7200s once running on local Ollama (unlimited but
+│   │   │                            # not always fast): the local model occasionally ignores stop
+│   │   │                            # tokens and fills its whole max_tokens budget instead of
+│   │   │                            # stopping cleanly — measured live at ~9 min for one such call
+│   │   │                            # at the old 4096-token cap; GPT-2's real ingestion had 3 of
+│   │   │                            # these in one run and still got SIGKILLed at the old 3600s
+│   │   │                            # limit with real progress made (29/~35 calls done). Lowered
+│   │   │                            # EXTRACTION_MAX_TOKENS 4096 -> 2048 alongside this to roughly
+│   │   │                            # halve that pathological call's worst case rather than just
+│   │   │                            # widen the ceiling.
 │   │   └── ingest_task.py           # litgraph.process_paper — built INGEST-004, reduced to a
 │   │                                # thin sync Celery entrypoint in INGEST-006 once
 │   │                                # src/services/ingestion/pipeline.py existed to hold the
@@ -849,6 +883,19 @@ litgraph/
 │       │                            # https://openrouter.ai/api/v1/models and filter for ids
 │       │                            # ending ":free" rather than guessing (two guessed llama
 │       │                            # slugs 404'd live as "no longer free").
+│       │                            #
+│       │                            # EVAL-001 added Ollama as a 6th provider (local, genuinely
+│       │                            # unlimited — no daily/RPM cap at all), appended last in
+│       │                            # _FALLBACK_PROVIDERS after openrouter. Reached via
+│       │                            # OLLAMA_BASE_URL=http://host.docker.internal:11434/v1 —
+│       │                            # Docker Desktop's DNS name for the host from inside a
+│       │                            # container (use localhost if running the backend outside
+│       │                            # Docker); no API key needed, Ollama's local server has no
+│       │                            # auth (placeholder key in _API_KEYS). Verified live: real
+│       │                            # ingestions failed over Groq -> Gemini -> OpenRouter -> Ollama
+│       │                            # mid-run and completed successfully on the local model. Unlimited
+│       │                            # doesn't mean fast, though — see celery_app.py's tree comment
+│       │                            # for the task_time_limit raise this required.
 │       ├── llm_json.py              # parse_json_response()/to_confidence() — pulled out of
 │       │                            # entity_extractor.py during EXTRACT-002 once
 │       │                            # relation_extractor.py needed the exact same "strip
@@ -1016,6 +1063,14 @@ litgraph/
 │   │   │                             # "transformer" from the Method section text) and they
 │   │   │                             # leaked into the dev graph across repeated live runs before
 │   │   │                             # being caught and cleaned up by hand.
+│   │   │                             # test_pipeline_marks_failed_cleanly_on_db_write_error_mid_parse
+│   │   │                             # (EVAL-001): monkeypatches parse_pdf to inject a NUL byte into
+│   │   │                             # a section, bypassing pdf_parser.py's own sanitization to test
+│   │   │                             # pipeline.py's error-recovery resilience independently —
+│   │   │                             # asserts run_pipeline doesn't raise and the job ends up FAILED
+│   │   │                             # (not orphaned at PARSING) with an error_message. See
+│   │   │                             # pipeline.py's tree comment for the double-failure bug this
+│   │   │                             # guards against.
 │   │   ├── test_query_api.py         # Built INGEST-005 — real HTTP request against the real
 │   │   │                             # FastAPI app + real ChromaDB, mocked LLM. Live-verified
 │   │   │                             # separately (not in this file — needs a running worker +
@@ -2055,16 +2110,20 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter", "ollama"] = "gemini"
     gemini_api_key: str = ""
     gemini_api_key_fallback: str = ""  # auto-switched to by llm_client's key ring on 429
     groq_api_key: str = ""             # manual fallback provider — free, higher daily cap
     groq_api_key_fallback: str = ""    # 2nd Groq key, own key ring, same mechanism
+    groq_api_key_fallback_2: str = ""  # 3rd Groq key, added 2026-08-13, same mechanism
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     openrouter_api_key: str = ""       # 4th provider, added 2026-08-13 — see llm_client.py's
                                         # tree comment for the model speed/correctness tradeoffs
                                         # measured live on its free tier
+    ollama_base_url: str = "http://host.docker.internal:11434/v1"  # 6th provider, added
+                                        # EVAL-001 — local, unlimited, no API key needed. See
+                                        # llm_client.py's tree comment.
     extraction_model: str = "gemini-flash-latest"
     extraction_max_tokens: int = 4096
     extraction_temperature: float = 0.1
