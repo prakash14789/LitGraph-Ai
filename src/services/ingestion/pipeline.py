@@ -132,8 +132,29 @@ async def run_pipeline(job_id: str) -> None:
             await session.commit()
 
 
+_MAX_SECTION_CHARS = 10_000  # ~2500 tokens at ~4 chars/token — EVAL-001 live
+# finding: raw section text was passed into entity/relation-extraction
+# prompts completely untruncated. GPT-2's ingestion hit a real provider
+# 413 ("Request too large", Groq's 12000 TPM cap) from ONE oversized
+# section — measured live: the candidate-entity list itself was cheap
+# (79 candidates = ~700 tokens), so the section text alone accounted for
+# the bulk of the ~15240 requested tokens. A section this large is more
+# likely mis-parsed (heading detection swallowing following sections)
+# than genuinely one coherent section, so truncating is a safe tradeoff,
+# not just an ugly workaround.
+
+
+def _truncate_sections(sections: dict[str, str]) -> dict[str, str]:
+    return {
+        name: (
+            text if len(text) <= _MAX_SECTION_CHARS else text[:_MAX_SECTION_CHARS] + "\n[truncated]"
+        )
+        for name, text in sections.items()
+    }
+
+
 async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) -> None:
-    sections: dict[str, str] = paper.sections or {}
+    sections: dict[str, str] = _truncate_sections(paper.sections or {})
 
     job.status = JobStatus.EXTRACTING_ENTITIES
     await session.commit()

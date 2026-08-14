@@ -11,9 +11,11 @@ import time
 import structlog
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     AuthenticationError,
     BadRequestError,
+    InternalServerError,
     OpenAI,
     RateLimitError,
 )
@@ -51,39 +53,96 @@ _API_KEYS = {
 }
 
 
-class _KeyRing:
-    """Walks forward through a provider's key list on quota errors and never
-    goes back — once a key's daily quota is hit, there's no point retrying it
-    again this process's lifetime (a fixed backoff won't refill a daily
-    quota). Persists across calls (module-level singleton): after the first
-    switch, every subsequent complete() call goes straight to the working key
-    instead of re-discovering the exhausted one every time."""
+# EVAL-001 live finding: a single real paper's extraction (3 LLM calls/
+# section) can burn an entire free-tier provider's daily quota by itself.
+# The extraction loop (pipeline.py's _write_graph) has no per-section
+# checkpointing, so previously, once a provider's own keys were exhausted
+# mid-paper, complete() just raised — losing all progress on that paper and
+# forcing a full manual provider switch + full re-upload. Cross-provider
+# models are known-good from live testing this session; hardcoded here
+# rather than added as more settings, since they're only used after already
+# failing over off the configured LLM_PROVIDER.
+_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter"]
+_FALLBACK_MODEL = {
+    "gemini": "gemini-flash-latest",
+    "groq": "llama-3.3-70b-versatile",
+    "openrouter": "openai/gpt-oss-20b:free",
+}
 
-    def __init__(self, keys: list[str]):
-        self._keys = keys or [""]  # keep indexable even if misconfigured
-        self._index = 0
+
+class _KeyRing:
+    """Walks forward through (provider, key) pairs on quota/overload errors
+    and never goes back — once a key's daily quota is hit, there's no point
+    retrying it again this process's lifetime (a fixed backoff won't refill
+    a daily quota). Starts on the configured LLM_PROVIDER's own key list
+    (using whatever model the caller passes — already correct for it), then
+    falls through to the other free providers in _FALLBACK_PROVIDERS once
+    that list is exhausted, using _FALLBACK_MODEL for those since the
+    caller's model string is only valid for the originally-configured
+    provider. Persists across calls (module-level singleton): after the
+    first switch, every subsequent complete() call goes straight to the
+    working (provider, key) instead of re-discovering exhausted ones."""
+
+    def __init__(self, keys: list[str] | None = None):
+        # `keys` is a test-only escape hatch (existing tests construct
+        # _KeyRing(["key-1", "key-2"]) directly) — treated as a single-
+        # provider chain, same behavior as before this class grew
+        # cross-provider failover. Real usage is the zero-arg form below,
+        # which builds the full chain from settings/_API_KEYS.
+        if keys is not None:
+            self._chain: list[tuple[str, list[str]]] = [(settings.llm_provider, keys or [""])]
+        else:
+            chain: list[tuple[str, list[str]]] = []
+            primary = settings.llm_provider
+            chain.append((primary, _API_KEYS.get(primary) or [""]))
+            for p in _FALLBACK_PROVIDERS:
+                if p == primary:
+                    continue
+                fallback_keys = [k for k in _API_KEYS.get(p, []) if k]
+                if fallback_keys:
+                    chain.append((p, fallback_keys))
+            self._chain = chain
+        self._provider_idx = 0
+        self._key_idx = 0
+
+    def provider(self) -> str:
+        return self._chain[self._provider_idx][0]
 
     def current(self) -> str:
-        return self._keys[self._index]
+        return self._chain[self._provider_idx][1][self._key_idx]
+
+    def model_override(self) -> str | None:
+        """None while still on the primary (configured) provider — its
+        model comes from the caller. Set once failed over to a fallback
+        provider, overriding whatever model the caller passed."""
+        if self._provider_idx == 0:
+            return None
+        return _FALLBACK_MODEL.get(self.provider())
 
     def advance(self) -> bool:
-        """Moves to the next key. Returns False if there isn't one (caller
-        should fall back to backoff-retrying the current key)."""
-        if self._index + 1 >= len(self._keys):
-            return False
-        self._index += 1
-        logger.warning("llm.key_rotated", provider=settings.llm_provider, key_index=self._index)
-        return True
+        """Moves to the next key, or the next provider once the current
+        provider's keys are exhausted. Returns False if nothing is left."""
+        provider, keys = self._chain[self._provider_idx]
+        if self._key_idx + 1 < len(keys):
+            self._key_idx += 1
+            logger.warning("llm.key_rotated", provider=provider, key_index=self._key_idx)
+            return True
+        if self._provider_idx + 1 < len(self._chain):
+            self._provider_idx += 1
+            self._key_idx = 0
+            logger.warning("llm.provider_failover", provider=self.provider())
+            return True
+        return False
 
 
-_key_ring = _KeyRing(_API_KEYS[settings.llm_provider])
+_key_ring = _KeyRing()
 
 
 def _client() -> OpenAI:
-    # Not cached: a rotated key must produce a fresh client on the very next
-    # call, and constructing an OpenAI() instance does no network I/O — the
-    # cache was saving essentially nothing.
-    return OpenAI(api_key=_key_ring.current(), base_url=_BASE_URLS[settings.llm_provider])
+    # Not cached: a rotated key/provider must produce a fresh client on the
+    # very next call, and constructing an OpenAI() instance does no network
+    # I/O — the cache was saving essentially nothing.
+    return OpenAI(api_key=_key_ring.current(), base_url=_BASE_URLS[_key_ring.provider()])
 
 
 class _RateLimiter:
@@ -123,20 +182,30 @@ def complete(
 ) -> str:
     """Send one chat completion, return the text.
 
-    A quota/rate-limit error first tries switching to the next configured key
-    (unlimited swaps — bounded by how many keys exist, not by _MAX_ATTEMPTS,
-    since a fresh key/quota deserves an immediate retry, not a backoff wait).
-    Once there's no next key, and for plain transient errors (timeout/
-    connection), retries up to _MAX_ATTEMPTS with exponential backoff. Auth
-    and bad-request errors fail immediately — retrying won't fix a bad key or
-    a content-policy rejection.
+    A quota/rate-limit error first tries switching to the next configured
+    key, then the next fallback provider (unlimited swaps — bounded by how
+    many (provider, key) pairs exist, not by _MAX_ATTEMPTS, since a fresh
+    key/quota deserves an immediate retry, not a backoff wait). A 5xx
+    "overloaded" error is treated the same way — retrying the *same* model
+    won't fix genuine overload, but a different provider's different model
+    will, so it also advances rather than backing off in place. Any other
+    non-2xx status (APIStatusError's catch-all — e.g. a 413 "request too
+    large", live-hit on Groq's tighter per-request token cap during
+    EVAL-001) advances too, as a defensive backstop: a request too big for
+    one provider's limits may fit another's, and the alternative is losing
+    all progress on a whole paper with no per-section checkpointing to
+    resume from. Once there's no next (provider, key), and for plain
+    transient errors (timeout/connection), retries up to _MAX_ATTEMPTS with
+    exponential backoff. Auth and bad-request errors fail immediately —
+    retrying won't fix a bad key or a content-policy rejection.
     """
     backoff_attempt = 0
     while True:
         _rate_limiter.wait()
+        effective_model = _key_ring.model_override() or model
         try:
             response = _client().chat.completions.create(
-                model=model,
+                model=effective_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -147,15 +216,15 @@ def complete(
             usage = response.usage
             logger.info(
                 "llm.completion",
-                provider=settings.llm_provider,
-                model=model,
+                provider=_key_ring.provider(),
+                model=effective_model,
                 prompt_tokens=usage.prompt_tokens if usage else None,
                 completion_tokens=usage.completion_tokens if usage else None,
             )
             return response.choices[0].message.content or ""
         except (AuthenticationError, BadRequestError):
             raise
-        except RateLimitError:
+        except (RateLimitError, InternalServerError, APIStatusError):
             if _key_ring.advance():
                 continue
             backoff_attempt += 1

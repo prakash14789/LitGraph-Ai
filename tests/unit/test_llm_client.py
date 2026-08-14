@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from openai import AuthenticationError, RateLimitError
+from openai import AuthenticationError, InternalServerError, RateLimitError
 
 from src.utils.llm_client import _API_KEYS, _BASE_URLS, _KeyRing, _RateLimiter, complete
 
@@ -116,6 +116,94 @@ def test_key_ring_advances_forward_and_never_wraps():
 def test_key_ring_single_key_never_advances():
     ring = _KeyRing(["only-key"])
     assert ring.advance() is False
+
+
+# --- EVAL-001: cross-provider failover ---------------------------------
+# _KeyRing() (zero-arg) reads settings.llm_provider/_API_KEYS at
+# construction time, so unlike the tests above (which pass a keys list and
+# can use @patch decorators freely), these build the ring *inside* the
+# test body after the fakes are already patched in via `with`.
+
+_FAKE_KEYS = {
+    "gemini": ["g-key"],
+    "groq": ["q-key"],
+    "openai": [],
+    "anthropic": [],
+    "openrouter": [],
+}
+
+
+def test_key_ring_builds_and_advances_across_providers():
+    with (
+        patch("src.utils.llm_client._API_KEYS", _FAKE_KEYS),
+        patch("src.utils.llm_client.settings.llm_provider", "gemini"),
+    ):
+        ring = _KeyRing()
+        assert ring.provider() == "gemini"
+        assert ring.model_override() is None  # primary provider uses the caller's own model
+        assert ring.advance() is True  # gemini's only key exhausted -> falls to groq
+        assert ring.provider() == "groq"
+        assert ring.model_override() == "llama-3.3-70b-versatile"
+        assert ring.advance() is False  # openai/anthropic/openrouter have no keys configured
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+def test_complete_fails_over_to_next_provider_on_quota_exhaustion():
+    with (
+        patch("src.utils.llm_client._API_KEYS", _FAKE_KEYS),
+        patch("src.utils.llm_client.settings.llm_provider", "gemini"),
+    ):
+        ring = _KeyRing()
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _http_error(RateLimitError, 429),  # gemini exhausted
+        _fake_response("answer from groq"),
+    ]
+    with (
+        patch("src.utils.llm_client._key_ring", ring),
+        patch("src.utils.llm_client._client", return_value=client),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = complete("sys", "user", model="gemini-flash-latest")
+
+    assert result == "answer from groq"
+    mock_sleep.assert_not_called()  # provider switch is immediate, no backoff wait
+    assert ring.provider() == "groq"
+    # the 2nd call must use groq's own model, not the caller's gemini model string
+    assert (
+        client.chat.completions.create.call_args_list[1].kwargs["model"]
+        == "llama-3.3-70b-versatile"
+    )
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+def test_complete_fails_over_on_server_overload_not_just_quota():
+    # A 5xx "model overloaded" error isn't a quota error, but retrying the
+    # *same* model won't fix genuine overload either — this should advance
+    # to the next provider exactly like a 429 does, not sit in a backoff
+    # loop hammering the same overloaded model.
+    with (
+        patch("src.utils.llm_client._API_KEYS", _FAKE_KEYS),
+        patch("src.utils.llm_client.settings.llm_provider", "gemini"),
+    ):
+        ring = _KeyRing()
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _http_error(InternalServerError, 503),
+        _fake_response("answer from groq"),
+    ]
+    with (
+        patch("src.utils.llm_client._key_ring", ring),
+        patch("src.utils.llm_client._client", return_value=client),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = complete("sys", "user", model="gemini-flash-latest")
+
+    assert result == "answer from groq"
+    mock_sleep.assert_not_called()
+    assert ring.provider() == "groq"
 
 
 def test_rate_limiter_throttles_when_limit_hit():

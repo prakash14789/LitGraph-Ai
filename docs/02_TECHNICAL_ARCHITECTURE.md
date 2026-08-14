@@ -507,6 +507,23 @@ litgraph/
 │   │   │                            # entrypoint (asyncio.run(run_pipeline(job_id))) — the real
 │   │   │                            # logic used to live there directly (INGEST-004), moved here
 │   │   │                            # once this ticket existed to build it properly (INGEST-006).
+│   │   │                            #
+│   │   │                            # EVAL-001 live findings (running real back-to-back
+│   │   │                            # ingestions, not just one-off tests): _write_graph now runs
+│   │   │                            # every section's raw text through a new _truncate_sections()
+│   │   │                            # helper (_MAX_SECTION_CHARS = 10,000) before it reaches any
+│   │   │                            # extraction prompt — an untruncated section (likely a
+│   │   │                            # mis-parsed one, heading detection swallowing later sections)
+│   │   │                            # blew a single request past Groq's 12,000 TPM cap and killed
+│   │   │                            # the whole paper's extraction with a 413, with no way to
+│   │   │                            # resume mid-paper. Separately, graph/queries.py's
+│   │   │                            # EXISTING_NAMED_ENTITIES gained a LIMIT 100 — it was
+│   │   │                            # unbounded, growing with every paper ever ingested, since the
+│   │   │                            # whole result gets stuffed into every cross-paper relation
+│   │   │                            # prompt for every section of every later paper (not what
+│   │   │                            # caused the 413 above — measured live at only ~700 tokens for
+│   │   │                            # 79 real entities — but a real compounding cost across a
+│   │   │                            # multi-paper corpus either way).
 │   │   │
 │   │   ├── retrieval/               # Query → Retrieved Context
 │   │   │   ├── __init__.py
@@ -736,11 +753,30 @@ litgraph/
 │   │   │                            # `celery -A src.tasks.celery_app` and never otherwise imports
 │   │   │                            # task modules, so a task defined without being in `include`
 │   │   │                            # registers on the API process (which does import it) but the
-│   │   │                            # worker rejects it as "unregistered".
+│   │   │                            # worker rejects it as "unregistered". task_time_limit raised
+│   │   │                            # 600s -> 3600s live during EVAL-001: the free OpenRouter
+│   │   │                            # model runs ~90-130s/call and _write_graph makes 3 calls/
+│   │   │                            # section, so a ~7-section paper needs 30-45 min — the old
+│   │   │                            # 10-min limit was silently SIGKILLing every real multi-
+│   │   │                            # section ingestion mid-extraction (no exception, job stuck
+│   │   │                            # forever at extracting_entities, confirmed no partial Neo4j
+│   │   │                            # writes since graph writes only start after every section's
+│   │   │                            # entities finish extracting). Lower this back down once
+│   │   │                            # LLM_PROVIDER points at a faster/paid model.
 │   │   └── ingest_task.py           # litgraph.process_paper — built INGEST-004, reduced to a
 │   │                                # thin sync Celery entrypoint in INGEST-006 once
 │   │                                # src/services/ingestion/pipeline.py existed to hold the
-│   │                                # real orchestration logic.
+│   │                                # real orchestration logic. EVAL-001 live finding: running two
+│   │                                # real ingestions back to back on the same forked worker
+│   │                                # crashed the 2nd one instantly with "Future attached to a
+│   │                                # different loop" — src/db.py's async engine and
+│   │                                # src/graph/connection.py's Neo4j driver are both process-
+│   │                                # lifetime singletons whose pooled connections are tied to
+│   │                                # whichever asyncio event loop created them, but asyncio.run()
+│   │                                # gives every task its own fresh loop. Now disposes/closes
+│   │                                # both at the end of every task (success or failure), inside
+│   │                                # the same loop that used them, so the next task's loop never
+│   │                                # gets handed a stale connection.
 │   │
 │   └── utils/                       # Shared Utilities
 │       ├── __init__.py
@@ -758,15 +794,49 @@ litgraph/
 │       │                            # tokens/day cap during EXTRACT-002), openai/anthropic stay
 │       │                            # single-key. OpenRouter (4th provider, added 2026-08-13
 │       │                            # once Gemini and Groq were both near/at their real caps the
-│       │                            # same day) is also single-key so far. Switching provider
-│       │                            # entirely (e.g. to Groq once both Gemini keys are spent) is
-│       │                            # still manual — LLM_PROVIDER + a matching model name; the
-│       │                            # OpenRouter switch is a live reminder of a real gap found
-│       │                            # doing this same thing for Groq earlier: llm_client passes
-│       │                            # `model` straight through with no check that it's actually
-│       │                            # valid for whichever provider LLM_PROVIDER currently
-│       │                            # selects — already bit GENERATION_MODEL/EXTRACTION_MODEL
-│       │                            # once (see routes/query.py's tree comment, RETRIEVAL-005).
+│       │                            # same day) is also single-key so far.
+│       │                            #
+│       │                            # EVAL-001 (2026-08-14) made this automatic, not manual:
+│       │                            # a single real paper's extraction (3 calls/section) can burn
+│       │                            # a whole free-tier provider's daily quota by itself, and
+│       │                            # _write_graph has no per-section checkpointing — a mid-run
+│       │                            # provider exhaustion used to lose all progress on that paper.
+│       │                            # _KeyRing (same class, extended) now also walks forward
+│       │                            # across providers once a provider's own key list is
+│       │                            # exhausted (_FALLBACK_PROVIDERS = [gemini, groq, openrouter]),
+│       │                            # using a hardcoded _FALLBACK_MODEL per fallback provider —
+│       │                            # this is exactly the "model isn't valid for whichever
+│       │                            # provider is currently selected" gap noted below, now solved
+│       │                            # by construction for the failover case specifically: the
+│       │                            # primary (configured) provider still uses the caller's own
+│       │                            # model, but the moment _KeyRing advances past it,
+│       │                            # model_override() substitutes the known-good model for
+│       │                            # wherever it lands, so the caller's original model string is
+│       │                            # never sent to the wrong provider. Verified live on BERT's
+│       │                            # real ingestion: Gemini key1 (1 call) -> key1 429 -> key2
+│       │                            # (2 calls) -> key2 429 -> auto-failover to Groq (3+ calls,
+│       │                            # much faster) — zero manual intervention, zero lost
+│       │                            # progress. InternalServerError (5xx "overloaded") and the
+│       │                            # generic APIStatusError catch-all (e.g. a 413 "request too
+│       │                            # large", live-hit on Groq's tighter per-request token cap)
+│       │                            # both advance the same way as a 429 — retrying the *same*
+│       │                            # key/model won't fix either, but a different provider might.
+│       │                            # Known gap, not yet fixed: a RateLimitError is always treated
+│       │                            # as permanent exhaustion (never retried on the same key), but
+│       │                            # Gemini's free tier has two independent caps — a real ~20/day
+│       │                            # cap (permanent this session) and a 5-req/minute cap (clears
+│       │                            # in ~60s) — and this code can't yet tell which one it hit, so
+│       │                            # it may fail over earlier than strictly necessary on a
+│       │                            # same-minute burst. Not harmful (Groq/OpenRouter absorb it
+│       │                            # fine), just not maximally quota-efficient.
+│       │                            #
+│       │                            # The pre-existing gap this was already a live reminder of:
+│       │                            # llm_client passes `model` straight through with no check
+│       │                            # that it's actually valid for whichever provider LLM_PROVIDER
+│       │                            # currently selects — already bit GENERATION_MODEL/
+│       │                            # EXTRACTION_MODEL once (see routes/query.py's tree comment,
+│       │                            # RETRIEVAL-005) before the failover chain existed to handle
+│       │                            # it automatically for THAT specific case.
 │       │                            # Model quality/speed tradeoff measured live on
 │       │                            # OpenRouter's free tier: openai/gpt-oss-20b:free produces
 │       │                            # correct output (a full real EXTRACT-005 pipeline run
@@ -799,7 +869,25 @@ litgraph/
 │   │                                # some handlers (POST /ingest/upload) deliberately commit
 │   │                                # mid-request.
 │   ├── unit/
-│   │   ├── test_llm_client.py       # Built SETUP-008 — mocked retry/rate-limit/no-retry-on-auth
+│   │   ├── test_llm_client.py       # Built SETUP-008 — mocked retry/rate-limit/no-retry-on-auth.
+│   │   │                            # EVAL-001 added 3 tests for cross-provider failover: chain
+│   │   │                            # building/advancing (_KeyRing() zero-arg form, constructed
+│   │   │                            # inside each test body after patching settings.llm_provider/
+│   │   │                            # _API_KEYS via `with`, not as a @patch decorator default —
+│   │   │                            # decorator defaults evaluate before other patches are active),
+│   │   │                            # a 429 failing over to the next provider with the right
+│   │   │                            # model_override(), and a 5xx doing the same (not just 429s).
+│   │   │                            # The existing _KeyRing(["key-1","key-2"]) call sites all kept
+│   │   │                            # working unchanged — that constructor form is now a
+│   │   │                            # deliberate test-only escape hatch (single-provider chain).
+│   │   ├── test_pipeline.py         # EVAL-001 — pure unit test for _truncate_sections(), no DB/
+│   │   │                            # LLM/Neo4j needed. Covers the live bug where raw section text
+│   │   │                            # passed into extraction prompts completely untruncated blew a
+│   │   │                            # single request past Groq's per-request token cap.
+│   │   ├── test_ingest_task.py      # EVAL-001 — mocked run_pipeline/engine/close_driver, proves
+│   │   │                            # both get disposed/closed after every task, success or
+│   │   │                            # failure (the actual fix for the cross-event-loop connection
+│   │   │                            # bug — see tasks/ingest_task.py's tree comment).
 │   │   ├── test_fixtures.py         # Built SETUP-009 — proves conftest fixtures actually work
 │   │   ├── test_pdf_parser.py       # Built INGEST-001 — synthetic PDF (deterministic, no real
 │   │   │                            # papers committed); heuristics separately verified live
@@ -1052,9 +1140,21 @@ litgraph/
 │   │                                   # verifiably run the strong assertions here: only 14 nodes
 │   │                                   # existed in this Neo4j at the time, well under the cap).
 │   └── eval/
-│       ├── eval_dataset.json         # 50 multi-hop questions with gold answers
-│       ├── run_eval.py               # Run both systems, score, output comparison
-│       └── eval_results/             # Stored evaluation results
+│       ├── eval_dataset.json         # EVAL-001. Originally curated as 21 papers/50 questions
+│       │                            # (Transformer architectures for NLP subfield), trimmed live
+│       │                            # to 9 papers/27 questions (9 single-hop, 12 multi-hop, 6
+│       │                            # comparison — multi-hop deliberately the largest category,
+│       │                            # since that's what EVAL-002 actually needs to show GraphRAG
+│       │                            # winning at) after real ingestion showed the combined
+│       │                            # Gemini+Groq+OpenRouter free-tier budget supports only
+│       │                            # ~1-2 fully-ingested papers/day — 21 papers would have taken
+│       │                            # 2-3 weeks. Every arxiv_id verified against real search
+│       │                            # results before writing gold answers, not from memory alone.
+│       │                            # Ingestion in progress: 2/9 papers done (Attention Is All You
+│       │                            # Need, BERT) as of 2026-08-14.
+│       ├── run_eval.py               # Not built yet (EVAL-002) — run both systems, score, output
+│       │                            # comparison.
+│       └── eval_results/             # Not built yet (EVAL-002) — stored evaluation results.
 │
 ├── frontend/                        # React Frontend — scaffold built FE-001
 │   │                                 # (Vite + React 18 + TS, hand-written rather than the

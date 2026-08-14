@@ -87,9 +87,19 @@ RETURN type(r) AS rel_type, startNode(r) = n AS from_self,
 # data to look candidates up against, now that EXTRACT-004 exists to write
 # it. Returns everything resolve_entity()/ResolvableEntity needs, so the
 # pipeline doesn't need a second round-trip per entity.
+# LIMIT added live during EVAL-001: unbounded, this list is stuffed
+# verbatim into every cross-paper relation-extraction prompt for every
+# section of every subsequent paper, so it grows without bound as more
+# papers get ingested — one real paper's worth (79 entities) already
+# tipped an unrelated oversized section over Groq's per-request token
+# cap. A cap trades "some cross-paper links to older/rarer entities might
+# be missed" for "request size stays bounded regardless of corpus size" —
+# reasonable for an MVP-scale eval corpus, not a real precision loss at
+# the scale this graph currently operates at.
 EXISTING_NAMED_ENTITIES = """
 MATCH (n)
 WHERE n:Method OR n:Dataset
 RETURN elementId(n) AS id, labels(n)[0] AS entity_type, n.canonical_name AS canonical_name,
        n.description AS description, n.aliases AS aliases, n.embedding AS embedding
+LIMIT 100
 """

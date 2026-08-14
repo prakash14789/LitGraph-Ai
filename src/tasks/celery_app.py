@@ -23,6 +23,16 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    task_time_limit=600,  # 10 min hard limit per task
-    task_soft_time_limit=570,
+    # EVAL-001 live finding: the currently-configured free OpenRouter model
+    # (openai/gpt-oss-20b:free) runs ~90-130s per LLM call, and _write_graph
+    # makes 3 calls/section (extract_entities + intra/cross relations) before
+    # any Neo4j write happens — a ~7-section paper needs ~20+ calls, i.e.
+    # 30-45 min, well past the old 600s (10 min) limit. That limit silently
+    # SIGKILLed real ingestions mid-extraction (no exception, job stuck
+    # forever at extracting_entities, no partial graph writes since Neo4j
+    # writes only start after every section's entity extraction finishes).
+    # Raised with real margin for the current slow model; lower this back
+    # down once LLM_PROVIDER points at a faster/paid model.
+    task_time_limit=3600,  # 60 min hard limit per task
+    task_soft_time_limit=3540,
 )
