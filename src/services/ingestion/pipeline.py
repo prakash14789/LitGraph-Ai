@@ -82,6 +82,15 @@ async def run_pipeline(job_id: str) -> None:
             job.error_message = "paper record not found"
             await session.commit()
             return
+        # Captured once, up front, as a plain string: a failed flush expires
+        # every ORM object in the session, and *reading* an attribute off an
+        # expired object (even an immutable one like an id) tries an
+        # implicit refresh that needs real async I/O — which fails with
+        # MissingGreenlet when attempted from inside a plain (non-awaited)
+        # attribute access, exactly where the except block below needs
+        # paper.id after an error-recovery rollback() has already expired
+        # it. A plain str has no such lifecycle to worry about.
+        paper_id_str = str(paper.id)
 
         try:
             job.status = JobStatus.PARSING
@@ -101,11 +110,11 @@ async def run_pipeline(job_id: str) -> None:
 
             job.status = JobStatus.CHUNKING
             await session.commit()
-            chunks = chunk_paper(parsed, paper_id=str(paper.id))
+            chunks = chunk_paper(parsed, paper_id=paper_id_str)
 
             job.status = JobStatus.EMBEDDING
             await session.commit()
-            store_chunks(str(paper.id), chunks)
+            store_chunks(paper_id_str, chunks)
 
             # Chunks are durable and queryable via vanilla RAG from here —
             # independent of whether graph extraction below succeeds.
@@ -113,7 +122,19 @@ async def run_pipeline(job_id: str) -> None:
             await session.commit()
         except Exception as exc:
             logger.error("pipeline.failed", job_id=job_id, error=str(exc))
-            _cleanup_partial_chunks(str(paper.id))
+            # EVAL-001 live finding: if the exception that landed here came
+            # from a failed flush/commit (e.g. ELECTRA's real PDF hit a
+            # Postgres UTF8 NUL-byte rejection on the paper.sections
+            # UPDATE), a failed flush expires every object in the session,
+            # and rollback() (needed before the session is usable again at
+            # all) doesn't undo that expiry. Setting a *new* value on an
+            # expired attribute (job.status = ...) is fine — no read
+            # needed — but *reading* one (paper.id, if it weren't already
+            # captured as paper_id_str above) tries an implicit refresh
+            # that needs real async I/O, which fails with MissingGreenlet
+            # from a plain attribute access outside an awaited context.
+            await session.rollback()
+            _cleanup_partial_chunks(paper_id_str)
             job.status = JobStatus.FAILED
             job.error_message = str(exc)[:2000]
             paper.ingestion_status = IngestionStatus.FAILED
@@ -127,6 +148,7 @@ async def run_pipeline(job_id: str) -> None:
             await session.commit()
         except Exception as exc:
             logger.error("pipeline.extraction_failed", job_id=job_id, error=str(exc))
+            await session.rollback()  # same reasoning as above
             job.status = JobStatus.FAILED
             job.error_message = str(exc)[:2000]
             await session.commit()

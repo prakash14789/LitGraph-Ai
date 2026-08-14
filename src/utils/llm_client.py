@@ -30,12 +30,15 @@ _BASE_URLS = {
     "anthropic": "https://api.anthropic.com/v1/",
     "groq": "https://api.groq.com/openai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "ollama": settings.ollama_base_url,
 }
 
 # Gemini and Groq get key lists (both measured hitting real free-tier daily
 # caps live — Gemini ~20 req/day, Groq ~100K tokens/day). openai/anthropic
 # stay single-key: paid keys don't hit the same wall. openrouter also
-# single-key for now (added 2026-08-13) — no 2nd key provided yet.
+# single-key for now (added 2026-08-13) — no 2nd key provided yet. ollama
+# gets a harmless placeholder — its local server has no auth, but the
+# OpenAI SDK requires some non-empty api_key string.
 _API_KEYS = {
     "gemini": [k for k in [settings.gemini_api_key, settings.gemini_api_key_fallback] if k],
     "openai": [settings.openai_api_key],
@@ -50,6 +53,7 @@ _API_KEYS = {
         if k
     ],
     "openrouter": [settings.openrouter_api_key],
+    "ollama": ["ollama"],
 }
 
 
@@ -61,12 +65,17 @@ _API_KEYS = {
 # forcing a full manual provider switch + full re-upload. Cross-provider
 # models are known-good from live testing this session; hardcoded here
 # rather than added as more settings, since they're only used after already
-# failing over off the configured LLM_PROVIDER.
-_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter"]
+# failing over off the configured LLM_PROVIDER. ollama is last in the
+# chain, not first — it's genuinely unlimited (no daily cap at all,
+# running on this machine's own hardware), but the cloud models are
+# higher-quality, so prefer them while they have headroom and only fall
+# back to local once every cloud option is actually exhausted.
+_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter", "ollama"]
 _FALLBACK_MODEL = {
     "gemini": "gemini-flash-latest",
     "groq": "llama-3.3-70b-versatile",
     "openrouter": "openai/gpt-oss-20b:free",
+    "ollama": "llama3.1:8b",
 }
 
 

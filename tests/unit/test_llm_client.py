@@ -13,7 +13,9 @@ def test_every_provider_has_a_base_url_and_key_list():
     # Catches the easy typo: adding a provider to one dict and forgetting
     # the other (both are keyed by settings.llm_provider's Literal values).
     assert (
-        set(_BASE_URLS) == set(_API_KEYS) == {"gemini", "openai", "anthropic", "groq", "openrouter"}
+        set(_BASE_URLS)
+        == set(_API_KEYS)
+        == {"gemini", "openai", "anthropic", "groq", "openrouter", "ollama"}
     )
 
 

@@ -85,11 +85,22 @@ def parse_pdf(path: str) -> ParsedPaper:
         return _failed(f"could not open PDF: {exc}")
 
     try:
-        pages = [page.get_text() for page in doc]
+        # EVAL-001 live finding: PyMuPDF occasionally extracts a NUL byte
+        # (0x00) from certain PDFs (malformed/embedded font content) —
+        # ELECTRA's real arXiv PDF hit this. Postgres's UTF8 text columns
+        # reject NUL outright, and that failure then cascaded into a 2nd
+        # failure inside the pipeline's own error handling (see
+        # pipeline.py), orphaning the job. Stripped once, at the source,
+        # so every downstream consumer (DB, chunker, embeddings) never
+        # sees it — cheaper than requiring every writer to remember to
+        # sanitize.
+        pages = [page.get_text().replace("\x00", "") for page in doc]
         full_text = "\n".join(pages)
         sections = _split_sections(full_text)
         references = _extract_references(sections.get("references", ""))
         title, authors = _extract_metadata(doc)
+        title = title.replace("\x00", "") if title else title
+        authors = [a.replace("\x00", "") for a in authors] if authors else authors
         tables = _extract_tables(doc)
     except Exception as exc:
         return _failed(f"could not parse PDF content: {exc}")

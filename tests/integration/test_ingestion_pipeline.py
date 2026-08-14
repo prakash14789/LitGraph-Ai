@@ -131,6 +131,46 @@ async def test_pipeline_marks_failed_on_bad_pdf_path(test_engine):
         await _cleanup(test_engine, paper_id, job_id)
 
 
+async def test_pipeline_marks_failed_cleanly_on_db_write_error_mid_parse(
+    test_engine, tmp_path, monkeypatch
+):
+    """Live bug found during EVAL-001: a NUL byte in parsed PDF text (a
+    real PyMuPDF quirk, hit on ELECTRA's real arXiv PDF) made Postgres
+    reject the paper.sections UPDATE (UTF8 doesn't allow \\x00), which
+    poisoned the session's transaction — and the except block's own
+    recovery commit, without a prior rollback, then raised a SECOND,
+    uncaught exception, orphaning the job at PARSING forever instead of
+    marking it FAILED. pdf_parser.py now strips NUL bytes at the source
+    (see its own tests), but this test exercises pipeline.py's own
+    resilience independently — in case some other future code path ever
+    writes genuinely invalid data again, the job must still fail cleanly,
+    not silently hang forever."""
+    pdf_path = tmp_path / "sample.pdf"
+    _build_pdf(str(pdf_path))
+    paper_id, job_id = await _create_paper_and_job(test_engine, str(pdf_path))
+
+    real_parse_pdf = pipeline.parse_pdf
+
+    def _parse_with_null_byte(path):
+        parsed = real_parse_pdf(path)
+        parsed.sections = {**parsed.sections, "abstract": "poisoned\x00text"}
+        return parsed
+
+    monkeypatch.setattr(pipeline, "parse_pdf", _parse_with_null_byte)
+
+    try:
+        await pipeline.run_pipeline(str(job_id))  # must not raise
+
+        async with AsyncSession(bind=test_engine) as session:
+            job = await session.get(ExtractionJob, job_id)
+            paper = await session.get(Paper, paper_id)
+            assert job.status == JobStatus.FAILED  # not orphaned at PARSING
+            assert job.error_message
+            assert paper.ingestion_status == IngestionStatus.FAILED
+    finally:
+        await _cleanup(test_engine, paper_id, job_id)
+
+
 async def test_pipeline_unknown_job_id_is_a_noop(test_engine):
     # Shouldn't raise — just logs and returns.
     await pipeline.run_pipeline(str(uuid.uuid4()))

@@ -57,7 +57,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter"] = "gemini"
+    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter", "ollama"] = (
+        "gemini"
+    )
     gemini_api_key: str = ""
     # Optional 2nd Gemini key — llm_client.py switches to it automatically
     # once gemini_api_key hits a 429 quota error. A free key's daily cap can
@@ -91,6 +93,16 @@ class Settings(BaseSettings):
     # gemini-free-tier-daily-cap.md's hard-won methodology lesson before
     # assuming this one's headroom either).
     openrouter_api_key: str = ""
+    # EVAL-001 — local Ollama, genuinely unlimited (runs on this machine's own
+    # GPU/CPU, no daily cap of any kind), the real fix for "every free cloud
+    # tier ran dry the same day". host.docker.internal is Docker Desktop's
+    # special DNS name for reaching a service on the host machine from inside
+    # a container — plain "localhost" here would resolve to the container
+    # itself, not the host running `ollama serve`. Use "localhost" instead if
+    # running the backend outside Docker. No API key needed/used — Ollama's
+    # local server has no auth; llm_client.py sends a harmless placeholder
+    # since the OpenAI SDK requires a non-empty string.
+    ollama_base_url: str = "http://host.docker.internal:11434/v1"
     # "-latest" aliases, not dated snapshots — Google deprecates dated Gemini
     # models for new API keys faster than this project's timeline (verified
     # live: gemini-2.5-flash-lite and gemini-2.5-flash both 404'd as "no
