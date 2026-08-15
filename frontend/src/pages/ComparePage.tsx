@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { GitCompare, Network, Send } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -58,8 +58,8 @@ export function ComparePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border p-4">
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
+      <div className="border-b border-border bg-card/40 p-4">
+        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-xl border border-border bg-card p-1.5 shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-1 focus-within:ring-ring">
           <textarea
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -71,7 +71,7 @@ export function ComparePage() {
             }}
             rows={1}
             placeholder="Ask a question to compare GraphRAG vs. vanilla RAG..."
-            className="max-h-40 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="max-h-40 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-sm focus-visible:outline-none"
           />
           <Button size="icon" onClick={() => void submit()} disabled={!query.trim() || loading} aria-label="Compare">
             <Send className="h-4 w-4" />
@@ -109,6 +109,7 @@ export function ComparePage() {
           <div className={cn("lg:block", mobileTab === "graphrag" ? "block" : "hidden")}>
             <Panel
               title="GraphRAG"
+              icon={Network}
               accentClass="border-t-primary"
               loading={loading}
               answer={result?.graphrag.answer}
@@ -137,6 +138,7 @@ export function ComparePage() {
           <div className={cn("lg:block", mobileTab === "vanilla" ? "block" : "hidden")}>
             <Panel
               title="Vanilla RAG"
+              icon={GitCompare}
               accentClass="border-t-muted-foreground"
               loading={loading}
               answer={result?.vanilla.answer}
@@ -151,7 +153,7 @@ export function ComparePage() {
                   {result.vanilla.sources.length > 0 && (
                     <div className="mb-3 space-y-1.5">
                       {result.vanilla.sources.map((s, i) => (
-                        <div key={i} className="rounded-md border border-border bg-card p-2 text-xs">
+                        <div key={i} className="rounded-lg border border-border bg-card p-2 text-xs shadow-sm">
                           <p className="truncate font-medium">{s.paper_title ?? "Untitled paper"}</p>
                           <p className="truncate text-muted-foreground">
                             {s.section_name} · score {s.score.toFixed(2)}
@@ -188,23 +190,28 @@ export function ComparePage() {
 
 function Panel({
   title,
+  icon: Icon,
   accentClass,
   loading,
   answer,
   children,
 }: {
   title: string;
+  icon: typeof Network;
   accentClass: string;
   loading: boolean;
   answer: string | undefined;
   children?: React.ReactNode;
 }) {
   return (
-    <div className={cn("h-full overflow-y-auto border-t-4 p-4", accentClass)}>
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
+    <div className={cn("h-full overflow-y-auto border-t-4 bg-card/40 p-4", accentClass)}>
+      <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <Icon className="h-4 w-4" />
+        {title}
+      </h2>
 
       {loading && (
-        <div className="flex items-center gap-1 rounded-lg bg-muted px-4 py-3">
+        <div className="flex items-center gap-1 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
@@ -214,7 +221,7 @@ function Panel({
       {!loading && answer && (
         <>
           {children}
-          <div className="markdown rounded-lg bg-muted px-4 py-3 text-sm">
+          <div className="markdown rounded-xl border border-border bg-card px-4 py-3 text-sm shadow-sm">
             <ReactMarkdown>{answer}</ReactMarkdown>
           </div>
         </>

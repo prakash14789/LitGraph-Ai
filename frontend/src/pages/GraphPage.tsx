@@ -1,4 +1,4 @@
-import { Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -135,13 +135,16 @@ export function GraphPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border p-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search loaded nodes..."
-          className="w-48 rounded-md border border-input bg-background px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        />
+      <div className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 p-3 shadow-sm">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search loaded nodes..."
+            className="w-48 rounded-md border border-input bg-background py-1.5 pl-8 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        </div>
 
         <FilterChips label="Type" values={entityTypes} hidden={hiddenTypes} onToggle={(v) => toggleType(setHiddenTypes, v)} />
         <FilterChips
@@ -163,14 +166,14 @@ export function GraphPage() {
           ))}
         </select>
 
-        <div className="ml-auto flex items-center gap-1">
-          <Button variant="outline" size="icon" onClick={() => canvasRef.current?.zoomOut()} aria-label="Zoom out">
+        <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-border bg-background p-1 shadow-sm">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => canvasRef.current?.zoomOut()} aria-label="Zoom out">
             <ZoomOut className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="icon" onClick={() => canvasRef.current?.zoomIn()} aria-label="Zoom in">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => canvasRef.current?.zoomIn()} aria-label="Zoom in">
             <ZoomIn className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="icon" onClick={() => canvasRef.current?.fit()} aria-label="Fit to view">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => canvasRef.current?.fit()} aria-label="Fit to view">
             <Maximize2 className="h-4 w-4" />
           </Button>
         </div>
@@ -291,7 +294,7 @@ function EntitySidebar({
   onClose: () => void;
 }) {
   return (
-    <div className="w-72 shrink-0 overflow-y-auto border-l border-border bg-card p-4">
+    <div className="w-72 shrink-0 overflow-y-auto border-l border-border bg-card p-4 shadow-lg">
       <button onClick={onClose} className="mb-3 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
         <X className="h-3.5 w-3.5" />
         Close

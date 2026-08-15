@@ -56,7 +56,31 @@
 
   body {
     @apply bg-background text-foreground;
+    /* Subtle brand-tinted glow in the corners instead of flat white/black —
+       purely decorative, uses the existing --primary token so it stays
+       correct in dark mode with zero extra tokens to maintain. */
+    background-image:
+      radial-gradient(circle at 12% -10%, hsl(var(--primary) / 0.07), transparent 38%),
+      radial-gradient(circle at 88% 0%, hsl(var(--primary) / 0.05), transparent 32%);
+    background-attachment: fixed;
   }
+}
+
+/* Thin, rounded scrollbars instead of the default OS chrome — small touch,
+   every scrollable panel here (chat, context panel, graph sidebar) benefits. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
 }
 
 /* Minimal markdown styling for assistant chat messages (FE-003) — hand-rolled

@@ -56,7 +56,7 @@ export function EntityDetailModal({
       onClick={(e) => {
         if (e.target === ref.current) onClose();
       }}
-      className="w-full max-w-lg rounded-lg border border-border bg-card p-0 text-card-foreground backdrop:bg-black/50"
+      className="w-full max-w-lg rounded-xl border border-border bg-card p-0 text-card-foreground shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm"
     >
       {node && (
         <div className="max-h-[80vh] overflow-y-auto p-5">

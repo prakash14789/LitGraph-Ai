@@ -1,5 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Clock, Eye, Loader2, Trash2, UploadCloud, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  Eye,
+  FileText,
+  Loader2,
+  Trash2,
+  UploadCloud,
+  XCircle,
+} from "lucide-react";
 import { useRef, useState } from "react";
 
 import { PaperDetailModal } from "@/components/PaperDetailModal";
@@ -77,6 +86,11 @@ export function PapersPage() {
 
   return (
     <div className="mx-auto h-full max-w-4xl overflow-y-auto px-4 py-6">
+      <div className="mb-5">
+        <h1 className="text-lg font-semibold tracking-tight">Papers</h1>
+        <p className="text-sm text-muted-foreground">Upload sources to grow the knowledge graph.</p>
+      </div>
+
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -90,12 +104,24 @@ export function PapersPage() {
         }}
         onClick={() => fileInputRef.current?.click()}
         className={cn(
-          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-8 text-center transition-colors",
-          dragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+          "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-all",
+          dragActive
+            ? "border-primary bg-primary/5 shadow-inner"
+            : "border-border bg-card/50 hover:border-primary/50 hover:bg-primary/[0.03]"
         )}
       >
-        <UploadCloud className="h-8 w-8 text-muted-foreground" />
-        <p className="text-sm font-medium">Drag PDFs here, or click to browse</p>
+        <div
+          className={cn(
+            "flex h-12 w-12 items-center justify-center rounded-full transition-colors",
+            dragActive ? "bg-primary/15" : "bg-muted"
+          )}
+        >
+          <UploadCloud className={cn("h-6 w-6", dragActive ? "text-primary" : "text-muted-foreground")} />
+        </div>
+        <div>
+          <p className="text-sm font-medium">Drag PDFs here, or click to browse</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Papers are parsed, chunked, and added to the graph automatically</p>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -133,10 +159,10 @@ export function PapersPage() {
       </div>
 
       <div className="mt-6 grid grid-cols-4 gap-3">
-        <StatCard label="Papers" value={stats.total} />
-        <StatCard label="Done" value={stats.completed} className="text-emerald-600" />
-        <StatCard label="Processing" value={stats.processing} className="text-primary" />
-        <StatCard label="Failed" value={stats.failed} className="text-destructive" />
+        <StatCard label="Papers" value={stats.total} icon={FileText} tone="text-foreground bg-muted" />
+        <StatCard label="Done" value={stats.completed} icon={CheckCircle2} tone="text-emerald-600 bg-emerald-600/10" />
+        <StatCard label="Processing" value={stats.processing} icon={Loader2} tone="text-primary bg-primary/10" />
+        <StatCard label="Failed" value={stats.failed} icon={XCircle} tone="text-destructive bg-destructive/10" />
       </div>
 
       <div className="mt-6 space-y-2">
@@ -166,11 +192,26 @@ export function PapersPage() {
   );
 }
 
-function StatCard({ label, value, className }: { label: string; value: number; className?: string }) {
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: typeof FileText;
+  tone: string;
+}) {
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-center">
-      <div className={cn("text-xl font-semibold", className)}>{value}</div>
-      <div className="text-xs text-muted-foreground">{label}</div>
+    <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md">
+      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", tone)}>
+        <Icon className="h-4.5 w-4.5" />
+      </div>
+      <div className="min-w-0">
+        <div className="text-xl font-semibold leading-none">{value}</div>
+        <div className="mt-1 truncate text-xs text-muted-foreground">{label}</div>
+      </div>
     </div>
   );
 }
@@ -187,7 +228,7 @@ function PaperCard({
   const meta = STATUS_META[paper.ingestion_status];
   const StatusIcon = meta.icon;
   return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-card p-3">
+    <div className="group flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-3 shadow-sm transition-all hover:border-primary/30 hover:shadow-md">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{paper.title}</p>
         <p className="truncate text-xs text-muted-foreground">

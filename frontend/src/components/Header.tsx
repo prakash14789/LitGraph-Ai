@@ -16,23 +16,25 @@ const TABS = [
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-background px-4">
-      <div className="flex items-center gap-2 font-semibold text-foreground">
-        <Network className="h-5 w-5 text-primary" />
+    <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-background/80 px-4 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/70">
+      <div className="flex items-center gap-2.5 font-semibold tracking-tight text-foreground">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/70 shadow-sm shadow-primary/30">
+          <Network className="h-4 w-4 text-primary-foreground" />
+        </div>
         LitGraph
       </div>
 
-      <nav className="flex items-center gap-1">
+      <nav className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/40 p-1">
         {TABS.map((tab) => (
           <NavLink
             key={tab.to}
             to={tab.to}
             className={({ isActive }) =>
               cn(
-                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                "rounded-md px-3 py-1.5 text-sm font-medium transition-all",
                 isActive
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "bg-card text-primary shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
               )
             }
           >

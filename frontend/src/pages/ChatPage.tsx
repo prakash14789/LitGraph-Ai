@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { Send, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link } from "react-router-dom";
@@ -13,6 +13,15 @@ import { type ChatMessage, useChatStore } from "@/store/chatStore";
 // is global, not collection-scoped, so a selector here would either do
 // nothing or misleadingly imply filtering. Add once POLISH-005b lands
 // per-collection retrieval.
+
+// Purely a UX affordance for the empty state — fills the input, doesn't
+// auto-send, so the user can still edit before asking. No backend change.
+const EXAMPLE_PROMPTS = [
+  "What methods outperform BERT on GLUE?",
+  "How does RoBERTa's training differ from BERT's?",
+  "Which papers introduce a new pretraining objective?",
+];
+
 export function ChatPage() {
   const { messages, isLoading, error, send, retry } = useChatStore();
   const [input, setInput] = useState("");
@@ -40,8 +49,27 @@ export function ChatPage() {
       <div className="mx-auto flex h-full w-full max-w-3xl flex-1 flex-col">
         <div className="flex-1 overflow-y-auto px-4 py-6">
           {messages.length === 0 && !isLoading ? (
-            <div className="flex h-full items-center justify-center text-center text-muted-foreground">
-              Ask a question about your papers
+            <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-primary/15 to-primary/5">
+                <Sparkles className="h-6 w-6 text-primary" />
+              </div>
+              <div>
+                <p className="font-medium text-foreground">Ask a question about your papers</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Answers are grounded in the ingested papers' knowledge graph.
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {EXAMPLE_PROMPTS.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setInput(p)}
+                    className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-foreground"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="flex flex-col gap-4">
@@ -63,8 +91,8 @@ export function ChatPage() {
           </div>
         )}
 
-        <div className="border-t border-border p-4">
-          <div className="flex items-end gap-2">
+        <div className="p-4">
+          <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-1.5 shadow-sm transition-shadow focus-within:shadow-md focus-within:ring-1 focus-within:ring-ring">
             <textarea
               ref={textareaRef}
               value={input}
@@ -81,7 +109,7 @@ export function ChatPage() {
               }}
               rows={1}
               placeholder="Ask a question about your papers..."
-              className="max-h-40 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="max-h-40 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-sm focus-visible:outline-none"
             />
             <Button size="icon" onClick={submit} disabled={!input.trim() || isLoading} aria-label="Send">
               <Send className="h-4 w-4" />
@@ -107,8 +135,10 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     <div className={cn("flex flex-col gap-2", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
-          "max-w-[85%] rounded-lg px-4 py-2 text-sm",
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+          "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm shadow-sm",
+          isUser
+            ? "rounded-br-sm bg-gradient-to-br from-primary to-primary/90 text-primary-foreground"
+            : "rounded-bl-sm border border-border bg-card text-foreground"
         )}
       >
         {isUser ? (
@@ -144,7 +174,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 function TypingIndicator() {
   return (
     <div className="flex items-start">
-      <div className="flex items-center gap-1 rounded-lg bg-muted px-4 py-3">
+      <div className="flex items-center gap-1 rounded-2xl rounded-bl-sm border border-border bg-card px-4 py-3 shadow-sm">
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
