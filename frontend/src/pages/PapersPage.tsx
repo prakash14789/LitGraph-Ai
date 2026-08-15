@@ -4,7 +4,9 @@ import {
   Clock,
   Eye,
   FileText,
+  FolderPlus,
   Loader2,
+  Pencil,
   Trash2,
   UploadCloud,
   XCircle,
@@ -15,7 +17,7 @@ import { PaperDetailModal } from "@/components/PaperDetailModal";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { litgraphApi } from "@/services/api";
-import type { IngestionStatus, Paper } from "@/types";
+import type { Collection, IngestionStatus, Paper } from "@/types";
 
 const STATUS_META: Record<
   IngestionStatus,
@@ -33,10 +35,19 @@ export function PapersPage() {
   const [dragActive, setDragActive] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null);
+  // "" = All papers (unfiltered, matches GET /papers with no collection_id
+  // — see api.ts). Also the collection new uploads get assigned to below.
+  const [activeCollectionId, setActiveCollectionId] = useState<string>("");
+
+  const collectionsQuery = useQuery({
+    queryKey: ["collections"],
+    queryFn: () => litgraphApi.getCollections().then((r) => r.data),
+  });
+  const collections = collectionsQuery.data ?? [];
 
   const papersQuery = useQuery({
-    queryKey: ["papers"],
-    queryFn: () => litgraphApi.getPapers().then((r) => r.data),
+    queryKey: ["papers", activeCollectionId],
+    queryFn: () => litgraphApi.getPapers(activeCollectionId || undefined).then((r) => r.data),
     // Re-lists (rather than polling GET /ingest/status/{job_id}) while
     // anything is still ingesting — satisfies the "poll status, auto-update"
     // AC without tracking job_id client-side, which a page refresh loses
@@ -56,9 +67,11 @@ export function PapersPage() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: (files: File[]) => litgraphApi.uploadPapers(files).then((r) => r.data),
+    mutationFn: (files: File[]) =>
+      litgraphApi.uploadPapers(files, activeCollectionId || null).then((r) => r.data),
     onSuccess: (results) => {
       void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
       const rejected = results.filter((r) => r.status === "rejected");
       setUploadErrors(rejected.map((r) => `${r.filename}: ${r.error ?? "rejected"}`));
     },
@@ -66,12 +79,73 @@ export function PapersPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => litgraphApi.deletePaper(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["papers"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+    },
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: ({ id, collectionId }: { id: string; collectionId: string | null }) =>
+      litgraphApi.assignPaperCollection(id, collectionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+    },
+  });
+
+  const createCollectionMutation = useMutation({
+    mutationFn: (name: string) => litgraphApi.createCollection(name).then((r) => r.data),
+    onSuccess: (created) => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      setActiveCollectionId(created.id);
+    },
+  });
+
+  const renameCollectionMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      litgraphApi.renameCollection(id, name),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["collections"] }),
+  });
+
+  const deleteCollectionMutation = useMutation({
+    mutationFn: (id: string) => litgraphApi.deleteCollection(id),
+    onSuccess: () => {
+      setActiveCollectionId("");
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
   });
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     uploadMutation.mutate(Array.from(files));
+  };
+
+  const handleNewCollection = () => {
+    const name = window.prompt("New collection name:");
+    if (name?.trim()) createCollectionMutation.mutate(name.trim());
+  };
+
+  const handleRenameCollection = () => {
+    const current = collections.find((c) => c.id === activeCollectionId);
+    if (!current) return;
+    const name = window.prompt("Rename collection:", current.name);
+    if (name?.trim() && name.trim() !== current.name) {
+      renameCollectionMutation.mutate({ id: current.id, name: name.trim() });
+    }
+  };
+
+  const handleDeleteCollection = () => {
+    const current = collections.find((c) => c.id === activeCollectionId);
+    if (!current) return;
+    if (
+      window.confirm(
+        `Delete collection "${current.name}"? Papers in it are kept, just unassigned.`
+      )
+    ) {
+      deleteCollectionMutation.mutate(current.id);
+    }
   };
 
   const papers = papersQuery.data ?? [];
@@ -89,6 +163,39 @@ export function PapersPage() {
       <div className="mb-5">
         <h1 className="text-lg font-semibold tracking-tight">Papers</h1>
         <p className="text-sm text-muted-foreground">Upload sources to grow the knowledge graph.</p>
+      </div>
+
+      {/* Collection filter/organize toolbar (POLISH-005 — organizational
+          only: filters this page's list and scopes new uploads, does NOT
+          filter Chat or Graph answers). */}
+      <div className="mb-4 flex items-center gap-2">
+        <select
+          value={activeCollectionId}
+          onChange={(e) => setActiveCollectionId(e.target.value)}
+          className="rounded-md border border-input bg-card px-2.5 py-1.5 text-sm"
+          aria-label="Filter by collection"
+        >
+          <option value="">All papers</option>
+          {collections.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name} ({c.paper_count})
+            </option>
+          ))}
+        </select>
+        <Button variant="outline" size="sm" onClick={handleNewCollection}>
+          <FolderPlus className="mr-1.5 h-3.5 w-3.5" />
+          New collection
+        </Button>
+        {activeCollectionId && (
+          <>
+            <Button variant="ghost" size="icon" onClick={handleRenameCollection} aria-label="Rename collection">
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={handleDeleteCollection} aria-label="Delete collection">
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </>
+        )}
       </div>
 
       <div
@@ -120,7 +227,11 @@ export function PapersPage() {
         </div>
         <div>
           <p className="text-sm font-medium">Drag PDFs here, or click to browse</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Papers are parsed, chunked, and added to the graph automatically</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Papers are parsed, chunked, and added to the graph automatically
+            {activeCollectionId &&
+              ` — into "${collections.find((c) => c.id === activeCollectionId)?.name}"`}
+          </p>
         </div>
         <input
           ref={fileInputRef}
@@ -174,12 +285,14 @@ export function PapersPage() {
           <PaperCard
             key={paper.id}
             paper={paper}
+            collections={collections}
             onView={() => setSelectedPaperId(paper.id)}
             onDelete={() => {
               if (window.confirm(`Delete "${paper.title}"? This can't be undone.`)) {
                 deleteMutation.mutate(paper.id);
               }
             }}
+            onAssign={(collectionId) => assignMutation.mutate({ id: paper.id, collectionId })}
           />
         ))}
       </div>
@@ -218,12 +331,16 @@ function StatCard({
 
 function PaperCard({
   paper,
+  collections,
   onView,
   onDelete,
+  onAssign,
 }: {
   paper: Paper;
+  collections: Collection[];
   onView: () => void;
   onDelete: () => void;
+  onAssign: (collectionId: string | null) => void;
 }) {
   const meta = STATUS_META[paper.ingestion_status];
   const StatusIcon = meta.icon;
@@ -250,6 +367,24 @@ function PaperCard({
         />
         {meta.label}
       </div>
+
+      {/* Per-paper collection assignment (POLISH-005) — native select over
+          a custom dropdown, no component library installed for this yet
+          and one isn't worth adding for a single control. */}
+      <select
+        value={paper.collection_id ?? ""}
+        onChange={(e) => onAssign(e.target.value || null)}
+        onClick={(e) => e.stopPropagation()}
+        className="shrink-0 rounded-md border border-input bg-transparent px-1.5 py-1 text-xs text-muted-foreground"
+        aria-label="Assign to collection"
+      >
+        <option value="">No collection</option>
+        {collections.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
 
       {/* Two direct action buttons instead of a kebab menu — a hidden menu
           for exactly 2 actions is indirection with no payoff, and no

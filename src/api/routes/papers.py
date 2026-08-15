@@ -7,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_db
-from src.api.schemas.papers import PaperDetail, PaperEntity, PaperListItem, PaperRelationship
+from src.api.schemas.papers import (
+    PaperDetail,
+    PaperEntity,
+    PaperListItem,
+    PaperRelationship,
+    PaperUpdate,
+)
 from src.graph.connection import get_driver
 from src.graph.queries import PAPER_SUBGRAPH
 from src.models.paper import Paper
@@ -74,6 +80,23 @@ async def get_paper(paper_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> 
         entities=list(entities.values()),
         relationships=relationships,
     )
+
+
+@router.patch("/papers/{paper_id}", response_model=PaperListItem)
+async def update_paper(
+    paper_id: uuid.UUID, request: PaperUpdate, db: AsyncSession = Depends(get_db)
+) -> PaperListItem:
+    """POLISH-005's "assigning papers to a collection" AC — the only way to
+    move an already-ingested paper into/out of a collection after upload
+    time (ingest.py's own collection_id form field only covers assignment
+    at upload). collection_id=null unassigns (papers.collection_id is
+    nullable — see src/models/paper.py)."""
+    paper = await paper_repository.get_by_id(db, paper_id)
+    if paper is None:
+        raise HTTPException(404, "paper not found")
+    paper.collection_id = request.collection_id
+    await db.flush()
+    return _list_item(paper)
 
 
 @router.delete("/papers/{paper_id}", status_code=204)

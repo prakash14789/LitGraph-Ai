@@ -873,6 +873,15 @@ Full CRUD for collections in API + frontend: create collection, rename, delete, 
 - Papers page list/filter by collection works correctly
 - Chat and Graph pages are NOT claimed to be collection-filtered by this ticket
 
+**Shipped 2026-08-15:** `POST/GET/PATCH/DELETE /collections` + `PATCH
+/papers/{id}` (assign/unassign), Papers page collection filter/create/
+rename/delete + per-paper reassign dropdown, upload-into-selected-
+collection. Backfilled the 9 pre-existing eval-set papers into one
+collection (`scripts/backfill_core_collection.py`). Also landed, as prep
+for `POLISH-005b` only (no retrieval behavior change): `collection_id` is
+now stamped onto new Paper nodes/chunk metadata at write time, so a future
+`POLISH-005b` won't need a second backfill for papers ingested from here on.
+
 ---
 
 ### [POLISH-005b] Per-Collection Retrieval Scoping (Deferred — Not MVP)

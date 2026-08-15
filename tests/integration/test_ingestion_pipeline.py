@@ -184,7 +184,7 @@ async def test_pipeline_cleans_up_partial_chunks_on_failure(test_engine, tmp_pat
     _build_pdf(str(pdf_path))
     paper_id, job_id = await _create_paper_and_job(test_engine, str(pdf_path))
 
-    def _fake_store_chunks(pid: str, chunks) -> int:
+    def _fake_store_chunks(pid: str, chunks, collection_id: str | None = None) -> int:
         add_texts(
             settings.chroma_collection_chunks,
             ids=[f"{pid}_0"],

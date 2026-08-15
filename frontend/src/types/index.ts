@@ -88,6 +88,16 @@ export interface Paper {
   created_at: string;
 }
 
+// Mirrors src/api/schemas/collections.py's CollectionResponse (POLISH-005 —
+// organizational only, does NOT scope Chat/Graph retrieval; see api.ts).
+export interface Collection {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  paper_count: number;
+}
+
 // Mirrors src/api/schemas/papers.py's PaperEntity/PaperRelationship/PaperDetail (FE-002).
 export interface PaperEntity {
   id: string;

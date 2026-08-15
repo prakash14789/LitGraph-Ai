@@ -13,9 +13,13 @@ logger = structlog.get_logger()
 _BATCH_SIZE = 100
 
 
-def store_chunks(paper_id: str, chunks: list[Chunk]) -> int:
+def store_chunks(paper_id: str, chunks: list[Chunk], collection_id: str | None = None) -> int:
     """Embeds and stores chunks in the paper_chunks collection. Returns the
-    number of chunks stored (0 if empty or the paper's already ingested)."""
+    number of chunks stored (0 if empty or the paper's already ingested).
+
+    collection_id (POLISH-005b prep) is stamped into chunk metadata only —
+    plain tagging, not read by any query yet (vector_retriever.py's search
+    stays global until POLISH-005b wires a `where` filter into it)."""
     if not chunks:
         return 0
 
@@ -28,7 +32,7 @@ def store_chunks(paper_id: str, chunks: list[Chunk]) -> int:
             collection_name=settings.chroma_collection_chunks,
             ids=[_chunk_id(c) for c in batch],
             texts=[c.text for c in batch],
-            metadatas=[_metadata(c) for c in batch],
+            metadatas=[_metadata(c, collection_id) for c in batch],
         )
 
     logger.info("embedding_storage.stored", paper_id=paper_id, chunk_count=len(chunks))
@@ -45,7 +49,7 @@ def _chunk_id(chunk: Chunk) -> str:
     return f"{chunk.paper_id}_{chunk.chunk_index}"
 
 
-def _metadata(chunk: Chunk) -> dict:
+def _metadata(chunk: Chunk, collection_id: str | None = None) -> dict:
     # Chroma metadata values must be str/int/float/bool — no None.
     metadata = {
         "paper_id": chunk.paper_id,
@@ -54,6 +58,8 @@ def _metadata(chunk: Chunk) -> dict:
     }
     if chunk.page_number is not None:
         metadata["page_number"] = chunk.page_number
+    if collection_id is not None:
+        metadata["collection_id"] = collection_id
     return metadata
 
 

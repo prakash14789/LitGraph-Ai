@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import type {
+  Collection,
   CompareQueryResponse,
   CompareVerdict,
   EntityDetailResponse,
@@ -42,9 +43,6 @@ export interface JobStatus {
   completed_at: string | null;
 }
 
-// Only wraps endpoints that exist today (RETRIEVAL-005/006, INGEST-004/007,
-// GRAPH-001). Collections CRUD (POLISH-005) isn't built yet — added once
-// that ticket lands, not stubbed against routes that would just 404.
 export const litgraphApi = {
   // Query — no collection_id param. Per RETRIEVAL-001's MVP scoping
   // decision, retrieval is global across all ingested papers, not filtered
@@ -60,17 +58,30 @@ export const litgraphApi = {
     api.post(`/query/compare/${queryLogId}/vote`, { verdict }),
 
   // Ingest
-  uploadPapers: (files: File[]) => {
+  uploadPapers: (files: File[], collectionId?: string | null) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
+    if (collectionId) form.append("collection_id", collectionId);
     return api.post<UploadResult[]>("/ingest/upload", form);
   },
   getIngestionStatus: (jobId: string) => api.get<JobStatus>(`/ingest/status/${jobId}`),
 
   // Papers
-  getPapers: () => api.get<Paper[]>("/papers"),
+  getPapers: (collectionId?: string | null) =>
+    api.get<Paper[]>("/papers", { params: collectionId ? { collection_id: collectionId } : {} }),
   getPaper: (id: string) => api.get<PaperDetail>(`/papers/${id}`),
   deletePaper: (id: string) => api.delete(`/papers/${id}`),
+  assignPaperCollection: (id: string, collectionId: string | null) =>
+    api.patch<Paper>(`/papers/${id}`, { collection_id: collectionId }),
+
+  // Collections (POLISH-005 — organizational only, see the `query` note
+  // above: does NOT scope Chat/Graph retrieval, Papers page filter only).
+  getCollections: () => api.get<Collection[]>("/collections"),
+  createCollection: (name: string, description?: string) =>
+    api.post<Collection>("/collections", { name, description }),
+  renameCollection: (id: string, name: string) =>
+    api.patch<Collection>(`/collections/${id}`, { name }),
+  deleteCollection: (id: string) => api.delete(`/collections/${id}`),
 
   // Graph
   getGraphOverview: () => api.get<GraphOverview>("/graph/overview"),

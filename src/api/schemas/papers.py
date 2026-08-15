@@ -41,3 +41,13 @@ class PaperDetail(PaperListItem):
     sections: dict | None
     entities: list[PaperEntity]
     relationships: list[PaperRelationship]
+
+
+class PaperUpdate(BaseModel):
+    """PATCH /papers/{id} (POLISH-005's "assigning papers to a collection"
+    acceptance criterion) — collection_id only field today; explicit
+    `has_collection_id` sentinel isn't needed since `null` unambiguously
+    means "unassign" here (there's nothing else `collection_id` could mean
+    once sent at all)."""
+
+    collection_id: uuid.UUID | None = None

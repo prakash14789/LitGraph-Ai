@@ -87,9 +87,17 @@ async def write_paper(
     year: int | None,
     venue: str | None,
     abstract: str | None,
+    collection_id: str | None = None,
 ) -> str:
     """MERGE keyed on paper_id (§4.2's uniqueness constraint) — reprocessing
-    the same paper updates this node instead of duplicating it."""
+    the same paper updates this node instead of duplicating it.
+
+    collection_id (POLISH-005b prep) is written on the Paper node only —
+    never on Method/Dataset/Author/Metric, per the ticket's own recommended
+    shared-entity decision (entities stay collection-agnostic; only
+    paper/chunk provenance is scoped). Not read by any query yet — plain
+    tagging, no retrieval behavior changes until POLISH-005b actually wires
+    it into graph_retriever.py's traversal."""
     vector = embed([abstract or title])[0]
     props = {
         "title": title,
@@ -98,6 +106,7 @@ async def write_paper(
         "venue": venue,
         "abstract": abstract,
         "embedding": vector,
+        "collection_id": collection_id,
     }
     node_id = await _merge_node("Paper", "paper_id", paper_id, props)
     logger.info("graph_writer.paper_written", paper_id=paper_id, node_id=node_id)

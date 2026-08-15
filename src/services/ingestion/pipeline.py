@@ -114,7 +114,8 @@ async def run_pipeline(job_id: str) -> None:
 
             job.status = JobStatus.EMBEDDING
             await session.commit()
-            store_chunks(paper_id_str, chunks)
+            collection_id_str = str(paper.collection_id) if paper.collection_id else None
+            store_chunks(paper_id_str, chunks, collection_id=collection_id_str)
 
             # Chunks are durable and queryable via vanilla RAG from here —
             # independent of whether graph extraction below succeeds.
@@ -204,7 +205,13 @@ async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) 
     job.status = JobStatus.RESOLVING_ENTITIES
     await session.commit()
     paper_node_id = await write_paper(
-        str(paper.id), paper.title, paper.authors, paper.year, paper.venue, paper.abstract
+        str(paper.id),
+        paper.title,
+        paper.authors,
+        paper.year,
+        paper.venue,
+        paper.abstract,
+        collection_id=str(paper.collection_id) if paper.collection_id else None,
     )
     await write_authors(paper_node_id, paper.authors or [])
 

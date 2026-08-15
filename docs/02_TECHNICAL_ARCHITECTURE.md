@@ -1426,12 +1426,12 @@ litgraph/
 │       ├── services/
 │       │   └── api.ts                # Axios client, VITE_API_URL base (04_FRONTEND_
 │       │                              # SPECIFICATION.md §7.1 — no auth interceptors, MVP has no
-│       │                              # auth). Only wraps endpoints that exist today
-│       │                              # (RETRIEVAL-005/006, INGEST-004, papers list/detail/
-│       │                              # delete) — graph/collections calls land with their own
-│       │                              # tickets (GRAPH-001, POLISH-005) rather than being stubbed
-│       │                              # against routes that would just 404. COMPARE-002 added
-│       │                              # voteCompare(queryLogId, verdict).
+│       │                              # auth). COMPARE-002 added voteCompare(queryLogId, verdict).
+│       │                              # POLISH-005 added getCollections/createCollection/
+│       │                              # renameCollection/deleteCollection/assignPaperCollection
+│       │                              # and an optional collectionId on uploadPapers/getPapers —
+│       │                              # `query`/`queryVanilla`/`compareQuery` deliberately still
+│       │                              # take none (POLISH-005b, retrieval scoping, not built).
 │       └── types/
 │           └── index.ts              # Mirrors src/api/schemas/query.py and papers.py's
 │                                      # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
@@ -1441,6 +1441,14 @@ litgraph/
 │                                      # CompareQueryResponse.query_log_id.
 │
 ├── scripts/
+│   ├── backfill_core_collection.py   # POLISH-005 one-time backfill — `python -m scripts.
+│   │                                  # backfill_core_collection`. Groups the 9 pre-existing
+│   │                                  # eval-set papers into one Collection: Postgres UPDATE +
+│   │                                  # Neo4j Paper.collection_id SET + Chroma paper_chunks
+│   │                                  # metadata patch, no re-embedding/re-extraction. Matches by
+│   │                                  # exact title against tests/eval/eval_dataset.json — a first
+│   │                                  # draft matched "every unassigned paper" instead and swept
+│   │                                  # in 6 unrelated rows (N-BEATS, DeepAR, etc.); fixed same day.
 │   ├── review_extraction.py          # Built EXTRACT-006 — `python -m scripts.review_extraction
 │   │                                  # <paper_id>`. Developer tool, not user-facing: re-runs
 │   │                                  # entity extraction -> relation extraction -> entity
@@ -2318,18 +2326,38 @@ edge is ever written. **GRAPH-003:** `entity_id` is optional — omitted,
 
 | Method | Endpoint | Description |
 |--------|---------|-------------|
-| `GET` | `/api/v1/papers` | List all ingested papers with metadata. |
+| `GET` | `/api/v1/papers` | List all ingested papers with metadata. `?collection_id=` filters. |
 | `GET` | `/api/v1/papers/{id}` | Paper details + extracted entities/relationships. |
+| `PATCH` | `/api/v1/papers/{id}` | Assign/unassign `collection_id` (POLISH-005). |
 | `DELETE` | `/api/v1/papers/{id}` | Remove paper + its entities/relationships from graph. |
 
-### 7.5 Collections
+### 7.5 Collections (POLISH-005 — implemented 2026-08-15)
 
 | Method | Endpoint | Description |
 |--------|---------|-------------|
 | `POST` | `/api/v1/collections` | Create a new collection. |
-| `GET` | `/api/v1/collections` | List all collections. |
-| `PUT` | `/api/v1/collections/{id}` | Update collection name/description. |
-| `DELETE` | `/api/v1/collections/{id}` | Delete collection (papers remain). |
+| `GET` | `/api/v1/collections` | List all collections, each with `paper_count`. |
+| `PATCH` | `/api/v1/collections/{id}` | Rename / update description (partial — only sent fields change). |
+| `DELETE` | `/api/v1/collections/{id}` | Delete collection — papers un-assign via `ondelete=SET NULL`, not deleted. |
+
+Organizational only, per the ticket's explicit scope correction: filters
+the Papers page and scopes which collection a new upload joins
+(`POST /ingest/upload`'s existing `collection_id` form field). Chat and
+Graph retrieval stay global — **not** filtered by collection.
+
+Prep work for the deferred `POLISH-005b` (per-collection retrieval
+scoping) landed alongside this: `graph_writer.write_paper()` stamps
+`collection_id` onto the Neo4j `Paper` node, and `embedding_storage.
+store_chunks()` stamps it into `paper_chunks` Chroma metadata — both take
+it as an optional argument (`None` by default, so every existing caller/
+test is unaffected) and neither is read by any retrieval query yet. Method/
+Dataset/Author/Metric nodes are deliberately never tagged — POLISH-005b's
+own recommended shared-entity decision keeps entities collection-agnostic,
+only paper/chunk provenance is scoped. A one-time backfill
+(`scripts/backfill_core_collection.py`) tags the 9 pre-existing eval-set
+papers (matched by exact title against `tests/eval/eval_dataset.json` —
+first draft matched "every unassigned paper" instead and swept in 6
+unrelated pre-existing rows; fixed same day before it shipped).
 
 ---
 

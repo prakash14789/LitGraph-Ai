@@ -82,6 +82,27 @@ async def test_write_paper_is_idempotent():
         await _cleanup(paper_id)
 
 
+async def test_write_paper_stamps_collection_id_when_given():
+    # POLISH-005b prep — plain property tagging, never on Method/Dataset/
+    # Author/Metric (see write_paper's own docstring for why).
+    paper_id = f"GW-TEST-PAPER-{uuid.uuid4()}"
+    try:
+        await graph_writer.write_paper(
+            paper_id, "GW Collection Test", [], None, None, None, collection_id="COLL-TEST-ID"
+        )
+
+        driver = get_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                "MATCH (p:Paper {paper_id: $id}) RETURN p.collection_id AS collection_id",
+                id=paper_id,
+            )
+            record = await result.single()
+        assert record["collection_id"] == "COLL-TEST-ID"
+    finally:
+        await _cleanup(paper_id)
+
+
 async def test_write_named_entity_merges_on_reprocess_and_upserts_chroma():
     name = f"GW-TEST-METHOD-{uuid.uuid4()}"
     node_id_1 = None

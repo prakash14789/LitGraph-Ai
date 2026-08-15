@@ -68,3 +68,14 @@ def test_duplicate_paper_is_skipped():
 
 def test_empty_chunk_list_returns_zero():
     assert store_chunks(_TEST_PAPER_ID, []) == 0
+
+
+def test_collection_id_stamped_into_metadata_when_given():
+    # POLISH-005b prep — plain tagging, omitted entirely when not given
+    # (existing test_stores_chunks_with_metadata call above passes none).
+    stored = store_chunks(_TEST_PAPER_ID, _chunks(1), collection_id="COLL-TEST-ID")
+    assert stored == 1
+
+    collection = get_collection(settings.chroma_collection_chunks)
+    result = collection.get(where={"paper_id": _TEST_PAPER_ID})
+    assert result["metadatas"][0]["collection_id"] == "COLL-TEST-ID"
