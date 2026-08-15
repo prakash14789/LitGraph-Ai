@@ -896,6 +896,42 @@ Only build this if/when collection-scoped answers are actually needed. Requires:
 - Shared entities behave per the decision documented above (not ad-hoc per query)
 - `RETRIEVAL-001`/`RETRIEVAL-002` tickets' "global retrieval" note updated to reflect the change once this ships
 
+**Shipped 2026-08-15**, decision (a) as recommended (entities collection-
+agnostic, only paper/chunk provenance scoped):
+- `vector_retriever.retrieve_seeds(..., collection_id=)`: chunk search gets
+  a direct Chroma `where={"collection_id": ...}` filter (chunks are
+  unambiguously one-paper). Entity search stays unscoped on purpose —
+  entity_embeddings metadata never carries collection_id, so there's
+  nothing to filter by; a shared entity's collection membership is
+  provenance (which papers reference it), not a property of the node.
+- `graph_retriever.retrieve_subgraph(..., collection_id=)`: not a Cypher
+  `WHERE` (traversal starts from collection-agnostic entity seeds, so
+  there's no single collection to filter the `MATCH` by up front) — a
+  post-traversal prune instead (`_filter_by_collection`): drop Paper nodes
+  whose `collection_id` doesn't match (untagged papers included — scoped
+  means only that collection, not "plus anything ungrouped"), drop edges
+  touching a dropped Paper, drop any now-orphaned non-Paper node. A shared
+  entity survives exactly when it still has an edge to an in-collection
+  paper — decision (a) falls out of a plain graph prune, no special-casing
+  needed.
+- `/query`, `/query/vanilla`, `/query/compare` all take an optional
+  `collection_id`; `/graph/subgraph` and `/graph/overview` too (the
+  whole-graph/overview snapshot seeds from every in-collection Paper and
+  reuses the same traversal+prune, instead of a second bespoke Cypher
+  aggregate that could drift out of sync with what the graph view shows).
+- Frontend: Chat and Graph pages both got a collection selector wired to
+  the above (Chat clears history on switch — an old answer grounded in a
+  different scope reads as confusing sitting above a new scope's
+  messages). `ComparePage.tsx` was **not** wired — left global on purpose,
+  not part of this pass's scope.
+- Test coverage: `tests/unit/test_graph_retriever_filter.py` (pure prune
+  logic), an integration test in `test_graph_retriever.py` proving a real
+  Cypher traversal correctly drops another collection's paper + its
+  private entity while keeping a shared one, and an integration test in
+  `test_query_api.py` proving `/query/vanilla` never leaks another
+  collection's (or an untagged) paper's chunks — the ticket's own AC,
+  checked directly.
+
 ---
 
 ### [POLISH-006] Faithfulness Check (Self-Audit)

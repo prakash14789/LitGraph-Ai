@@ -564,13 +564,16 @@ litgraph/
 │   │   │   │                        # bookkeeping itself. Empty graph -> chunks-only fallback
 │   │   │   │                        # needs no special-casing: Chroma's query() against an
 │   │   │   │                        # empty/no-match collection returns empty lists, not an
-│   │   │   │                        # error. Global search, not scoped by collection_id — the
-│   │   │   │                        # ticket's own "MVP scoping decision": neither chunk nor
-│   │   │   │                        # entity metadata carries collection_id, and entity
-│   │   │   │                        # resolution intentionally merges the same entity across
-│   │   │   │                        # every paper, so real per-collection scoping is deferred to
-│   │   │   │                        # POLISH-005. Live-verified against a real Chroma index (real
-│   │   │   │                        # embeddings, not mocked) finding a genuine semantic match.
+│   │   │   │                        # error. POLISH-005b (2026-08-15) added an optional
+│   │   │   │                        # collection_id: chunk search gets a direct Chroma `where`
+│   │   │   │                        # filter (chunks are unambiguously one-paper); entity search
+│   │   │   │                        # stays unscoped on purpose — entity_embeddings metadata
+│   │   │   │                        # never carries collection_id (entity resolution merges the
+│   │   │   │                        # same entity across every paper by design, so a shared
+│   │   │   │                        # entity has no single collection to tag it with) — see
+│   │   │   │                        # graph_retriever.py's own filter for how that's still made
+│   │   │   │                        # to behave correctly downstream. Live-verified against a
+│   │   │   │                        # real Chroma index (real embeddings) finding a genuine match.
 │   │   │   ├── graph_retriever.py   # Built RETRIEVAL-002 — retrieve_subgraph(seeds, hops,
 │   │   │                        # relationship_types, entity_types, max_nodes). Entity seeds'
 │   │   │                        # node_id is already a Neo4j elementId (used directly);
@@ -600,6 +603,19 @@ litgraph/
 │   │   │                        # elementIds actually used to seed the traversal) — added so
 │   │   │                        # RETRIEVAL-003's BFS distance calculation gets its distance-0
 │   │   │                        # anchors for free instead of re-running the paper_id lookup.
+│   │   │                        # POLISH-005b (2026-08-15) added an optional collection_id — a
+│   │   │                        # post-traversal prune (_filter_by_collection), not a Cypher
+│   │   │                        # WHERE: traversal starts from collection-agnostic entity seeds,
+│   │   │                        # so there's no single collection to filter the MATCH by up
+│   │   │                        # front. Drops Paper nodes whose collection_id doesn't match
+│   │   │                        # (untagged papers included — "scoped to A" means only A), drops
+│   │   │                        # edges touching a dropped Paper, drops any now-orphaned non-
+│   │   │                        # Paper node. Decision written into §5.2 below: a shared entity
+│   │   │                        # (Method/Dataset/...) stays collection-agnostic and survives
+│   │   │                        # exactly when it still has an edge to an in-collection paper —
+│   │   │                        # falls out of the plain prune, no special-casing needed. New
+│   │   │                        # resolve_collection_paper_seed_ids() helper feeds routes/
+│   │   │                        # graph.py's own collection-scoped whole-graph snapshot.
 │   │   │   ├── hybrid_scorer.py     # Built RETRIEVAL-003 — score_subgraph(subgraph, seeds,
 │   │   │   │                        # top_k, alpha, beta, gamma) implements the ticket's formula
 │   │   │   │                        # exactly: alpha*vector_similarity + beta*(1/graph_distance)
@@ -1285,11 +1301,12 @@ litgraph/
 │       ├── pages/
 │       │   ├── ChatPage.tsx          # FE-003: message history, markdown answers, citation
 │       │   │                          # cards, auto-resize input, typing indicator, inline
-│       │   │                          # error+retry. No collection selector — retrieval is
-│       │   │                          # global (RETRIEVAL-001's MVP scoping decision), so a
-│       │   │                          # selector here would either do nothing or misleadingly
-│       │   │                          # imply filtering; add once POLISH-005b lands per-
-│       │   │                          # collection retrieval.
+│       │   │                          # error+retry. POLISH-005b (2026-08-15) added a collection
+│       │   │                          # selector (chatStore.ts's collectionId/setCollectionId) —
+│       │   │                          # a real scope now, not a no-op: switching collections
+│       │   │                          # clears history first, so an old answer grounded in a
+│       │   │                          # different scope never sits above a new scope's messages
+│       │   │                          # with nothing distinguishing the two.
 │       │   ├── GraphPage.tsx         # GRAPH-003: full Graph Explorer. Full graph loads on visit
 │       │   │                          # (GET /graph/subgraph with no entity_id — the whole-graph
 │       │   │                          # snapshot this ticket added to that endpoint); arriving via
@@ -1303,11 +1320,11 @@ litgraph/
 │       │   │                          # search likewise highlights-with-pulse within the loaded
 │       │   │                          # set, not a fresh backend query — GET /graph/search already
 │       │   │                          # covers "find something not currently on screen" and isn't
-│       │   │                          # what this AC asks for. Collection selector intentionally
-│       │   │                          # omitted (same MVP scoping reasoning as FE-003's chat one)
-│       │   │                          # — GRAPH-001's endpoints take no collection_id, so there's
-│       │   │                          # no partial version of per-collection *graph* filtering to
-│       │   │                          # gesture at yet. Legend and entity-detail sidebar are
+│       │   │                          # what this AC asks for. Collection selector (POLISH-005b,
+│       │   │                          # 2026-08-15) re-fetches the subgraph scoped to the chosen
+│       │   │                          # collection — a real backend filter, unlike the type/
+│       │   │                          # relationship chips above which stay client-side hide/show
+│       │   │                          # over whatever's already loaded. Legend and entity-detail sidebar are
 │       │   │                          # page-local JSX, not extracted shared components — only
 │       │   │                          # this one consumer so far, extracting now would be
 │       │   │                          # premature.
@@ -1429,9 +1446,11 @@ litgraph/
 │       │                              # auth). COMPARE-002 added voteCompare(queryLogId, verdict).
 │       │                              # POLISH-005 added getCollections/createCollection/
 │       │                              # renameCollection/deleteCollection/assignPaperCollection
-│       │                              # and an optional collectionId on uploadPapers/getPapers —
-│       │                              # `query`/`queryVanilla`/`compareQuery` deliberately still
-│       │                              # take none (POLISH-005b, retrieval scoping, not built).
+│       │                              # and an optional collectionId on uploadPapers/getPapers.
+│       │                              # POLISH-005b (2026-08-15) then added it to `query`/
+│       │                              # `queryVanilla`/`getSubgraph`/`getGraphOverview` too —
+│       │                              # `compareQuery` deliberately still takes none
+│       │                              # (ComparePage.tsx wasn't wired this pass, left global).
 │       └── types/
 │           └── index.ts              # Mirrors src/api/schemas/query.py and papers.py's
 │                                      # PaperListItem/PaperDetail/PaperEntity/PaperRelationship —
@@ -1935,6 +1954,39 @@ User Query: "What methods improved on BERT for question answering?"
 └─────────────────────────────────────────────────┘
 ```
 
+#### 5.2.1 Collection scoping decision (POLISH-005b, 2026-08-15)
+
+RETRIEVAL-001/002's original MVP scoping note ("global search, not scoped
+by collection_id") no longer applies as of POLISH-005b — every step above
+now takes an optional `collection_id`. The shared-entity question
+POLISH-005b's own ticket flagged as needing an explicit decision: when an
+entity like BERT is referenced by papers in two different collections, does
+it (a) stay one shared node, visible in both collections' results, or (b)
+get resolved separately per collection?
+
+**Decision: (a).** A Method/Dataset/Author/Metric node is never tagged with
+a `collection_id` at all — only `Paper` nodes (Neo4j property) and
+`paper_chunks` records (Chroma metadata) are, since those are unambiguously
+owned by one paper. Retrieval enforces the scope by construction rather
+than by tagging every node type:
+- Vector seed search (Step 2): only the chunk search takes a `where`
+  filter; entity search stays global (there's no per-entity collection to
+  filter by).
+- Graph traversal (Step 3): runs unscoped as before, then a Python
+  post-filter drops any Paper node outside the target collection, drops
+  edges touching it, then drops any entity left with zero remaining edges.
+  A shared entity naturally survives exactly when at least one of its
+  connected papers is in-collection — matches (a) without a separate rule,
+  and avoids (b)'s cost (duplicate nodes per collection, defeats EXTRACT-
+  003's whole cross-paper dedup design).
+
+This is a real tradeoff, not a free lunch: an in-collection query can still
+surface an out-of-collection paper's *entity* (e.g. "BERT" shows up because
+some other paper in Collection A also uses it), just never that other
+paper's own citation/chunk text. Acceptable for the ticket's own AC
+("never returns citations from papers only in Collection B") — the AC is
+about citations, and it holds.
+
 ---
 
 ## 6. Configuration Management
@@ -2296,17 +2348,17 @@ volumes:
 
 | Method | Endpoint | Description |
 |--------|---------|-------------|
-| `POST` | `/api/v1/query` | GraphRAG query. Returns answer + citations + retrieved subgraph. |
-| `POST` | `/api/v1/query/compare` | Same query run on both GraphRAG and vanilla RAG. Returns both answers for comparison, plus `query_log_id`. |
+| `POST` | `/api/v1/query` | GraphRAG query. Body takes optional `collection_id` (POLISH-005b — see §5.2.1). Returns answer + citations + retrieved subgraph. |
+| `POST` | `/api/v1/query/compare` | Same query run on both GraphRAG and vanilla RAG. Returns both answers for comparison, plus `query_log_id`. No `collection_id` yet — not wired on the frontend (`ComparePage.tsx`) as of POLISH-005b, left global on purpose. |
 | `POST` | `/api/v1/query/compare/{query_log_id}/vote` | COMPARE-002. Body `{verdict}` (vanilla\|graphrag\|tie_good\|tie_bad). 204, or 404 if unknown id. Re-postable to change vote. |
-| `POST` | `/api/v1/query/vanilla` | Vanilla RAG only (baseline). |
+| `POST` | `/api/v1/query/vanilla` | Vanilla RAG only (baseline). Body takes optional `collection_id` (POLISH-005b). |
 
 ### 7.3 Graph
 
 | Method | Endpoint | Description |
 |--------|---------|-------------|
-| `GET` | `/api/v1/graph/overview` | Graph stats: total nodes, edges, entity type counts. |
-| `GET` | `/api/v1/graph/subgraph?entity_id={id}&hops={n}` | Get N-hop subgraph from an entity (entity_id optional — omitted returns a capped whole-graph snapshot, GRAPH-003). For visualization. |
+| `GET` | `/api/v1/graph/overview?collection_id={id}` | Graph stats: total nodes, edges, entity type counts. `collection_id` (POLISH-005b, optional) scopes the counts to what `/graph/subgraph` would show for that same collection. |
+| `GET` | `/api/v1/graph/subgraph?entity_id={id}&hops={n}&collection_id={id}` | Get N-hop subgraph from an entity (entity_id optional — omitted returns a capped whole-graph snapshot, GRAPH-003). `collection_id` (POLISH-005b, optional) scopes either path — omitted-entity_id path seeds from every Paper in the collection instead of an unscoped match. For visualization. |
 | `GET` | `/api/v1/graph/entity/{id}` | Full entity details + all connected relationships. |
 | `GET` | `/api/v1/graph/search?q={text}&type={entity_type}` | Search entities by text + optional type filter. |
 

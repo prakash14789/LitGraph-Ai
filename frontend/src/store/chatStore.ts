@@ -17,8 +17,10 @@ interface ChatState {
   isLoading: boolean;
   error: string | null;
   lastQuery: string | null;
+  collectionId: string | null; // POLISH-005b — null = global, unscoped
   send: (query: string) => void;
   retry: () => void;
+  setCollectionId: (id: string | null) => void;
 }
 
 let idCounter = 0;
@@ -39,7 +41,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }));
 
     try {
-      const { data } = await litgraphApi.query(query);
+      const { data } = await litgraphApi.query(query, get().collectionId);
       set((s) => ({
         messages: [
           ...s.messages,
@@ -64,6 +66,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     isLoading: false,
     error: null,
     lastQuery: null,
+    collectionId: null,
 
     send: (query: string) => {
       const trimmed = query.trim();
@@ -75,5 +78,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       const q = get().lastQuery;
       if (q && !get().isLoading) void runQuery(q, false);
     },
+
+    // Clears history on switch — an old answer grounded in a different
+    // scope sitting above a new scope's messages would be confusing to
+    // read, and there's no per-message "which collection was this scoped
+    // to" tag to disambiguate it in the UI.
+    setCollectionId: (id: string | null) => set({ collectionId: id, messages: [], error: null }),
   };
 });

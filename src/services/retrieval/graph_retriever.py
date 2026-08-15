@@ -103,7 +103,13 @@ async def retrieve_subgraph(
     relationship_types: list[str] | None = None,
     entity_types: list[str] | None = None,
     max_nodes: int = _MAX_NODES,
+    collection_id: str | None = None,
 ) -> Subgraph:
+    """collection_id (POLISH-005b) — post-filter, not a traversal-time Cypher
+    clause: traversal starts from arbitrary entity seeds (Method/Dataset/...),
+    which are collection-agnostic by design (see vector_retriever.py's own
+    docstring), so there's no single collection to filter the MATCH by up
+    front. Applied after the fact instead, see _filter_by_collection."""
     hops = max(1, min(4, hops or settings.graph_traversal_hops))
     seed_ids = await _resolve_seed_ids(seeds)
     if not seed_ids:
@@ -125,7 +131,61 @@ async def retrieve_subgraph(
         )
         rows = [record async for record in result]
 
-    return _cap_subgraph(rows, set(seed_ids), entity_types, max_nodes, seed_ids)
+    subgraph = _cap_subgraph(rows, set(seed_ids), entity_types, max_nodes, seed_ids)
+    if collection_id is not None:
+        subgraph = _filter_by_collection(subgraph, collection_id)
+    return subgraph
+
+
+async def resolve_collection_paper_seed_ids(collection_id: str) -> list[str]:
+    """elementIds of every Paper node tagged with this collection_id — GRAPH-
+    001/003's whole-graph snapshot uses these as traversal seeds instead of
+    an unscoped MATCH (n) when a collection filter is active (see routes/
+    graph.py), the same seed shape EntitySeed.node_id already is."""
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            "MATCH (p:Paper {collection_id: $collection_id}) RETURN elementId(p) AS id",
+            collection_id=collection_id,
+        )
+        return [record["id"] async for record in result]
+
+
+def _filter_by_collection(subgraph: Subgraph, collection_id: str) -> Subgraph:
+    """Drops every Paper node whose collection_id doesn't match (untagged
+    papers included — "scoped to collection A" means only A, not A-plus-
+    ungrouped), then drops edges touching a dropped Paper, then drops any
+    non-Paper node left with zero edges. A shared entity (Method/Dataset/...,
+    deliberately never tagged — see this module's/vector_retriever.py's own
+    docstrings) survives exactly when it still has at least one edge to an
+    in-collection paper, which is POLISH-005b's own recommended shared-
+    entity behavior (decision (a): collection-agnostic, provenance-scoped)
+    falling out of a plain graph prune rather than needing its own rule.
+    Single pass, not iterative — direct Paper-node edges are the only ones
+    ever cut, so nothing further downstream needs a second pass to notice."""
+    keep_paper_ids = {
+        n.node_id
+        for n in subgraph.nodes
+        if "Paper" in n.labels and n.properties.get("collection_id") == collection_id
+    }
+    drop_paper_ids = {n.node_id for n in subgraph.nodes if "Paper" in n.labels} - keep_paper_ids
+    if not drop_paper_ids:
+        return subgraph
+
+    edges = [
+        e
+        for e in subgraph.edges
+        if e.source_id not in drop_paper_ids and e.target_id not in drop_paper_ids
+    ]
+    connected_ids = {e.source_id for e in edges} | {e.target_id for e in edges}
+    nodes = [
+        n
+        for n in subgraph.nodes
+        if n.node_id not in drop_paper_ids
+        and (n.node_id in connected_ids or n.node_id in keep_paper_ids)
+    ]
+    seed_ids = [s for s in subgraph.seed_ids if s not in drop_paper_ids]
+    return Subgraph(nodes=nodes, edges=edges, seed_ids=seed_ids)
 
 
 async def _resolve_seed_ids(seeds: SeedResult) -> list[str]:

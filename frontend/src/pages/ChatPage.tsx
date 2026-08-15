@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { Send, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -7,12 +8,11 @@ import { ContextPanel } from "@/components/ContextPanel";
 import { EntityDetailModal } from "@/components/EntityDetailModal";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { litgraphApi } from "@/services/api";
 import { type ChatMessage, useChatStore } from "@/store/chatStore";
 
-// Collection selector deliberately omitted (FE-003 ticket note): retrieval
-// is global, not collection-scoped, so a selector here would either do
-// nothing or misleadingly imply filtering. Add once POLISH-005b lands
-// per-collection retrieval.
+// Collection selector (POLISH-005b — retrieval is now collection-scoped
+// when one is picked; "All papers" keeps the original global behavior).
 
 // Purely a UX affordance for the empty state — fills the input, doesn't
 // auto-send, so the user can still edit before asking. No backend change.
@@ -23,11 +23,17 @@ const EXAMPLE_PROMPTS = [
 ];
 
 export function ChatPage() {
-  const { messages, isLoading, error, send, retry } = useChatStore();
+  const { messages, isLoading, error, send, retry, collectionId, setCollectionId } = useChatStore();
   const [input, setInput] = useState("");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const collectionsQuery = useQuery({
+    queryKey: ["collections"],
+    queryFn: () => litgraphApi.getCollections().then((r) => r.data),
+  });
+  const collections = collectionsQuery.data ?? [];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -47,6 +53,23 @@ export function ChatPage() {
   return (
     <div className="flex h-full">
       <div className="mx-auto flex h-full w-full max-w-3xl flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <span className="text-xs text-muted-foreground">Asking within:</span>
+          <select
+            value={collectionId ?? ""}
+            onChange={(e) => setCollectionId(e.target.value || null)}
+            className="rounded-md border border-input bg-card px-2 py-1 text-xs"
+            aria-label="Scope chat to a collection"
+          >
+            <option value="">All papers</option>
+            {collections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="flex-1 overflow-y-auto px-4 py-6">
           {messages.length === 0 && !isLoading ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">

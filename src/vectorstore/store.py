@@ -41,6 +41,13 @@ def add_texts(
     collection.add(ids=ids, embeddings=embed(texts), documents=texts, metadatas=metadatas)
 
 
-def query_similar(collection_name: str, query_text: str, top_k: int = 5) -> dict:
+def query_similar(
+    collection_name: str, query_text: str, top_k: int = 5, where: dict | None = None
+) -> dict:
+    """where (POLISH-005b) — Chroma metadata filter, e.g. {"collection_id": "..."}.
+    None (default) searches the full collection, unchanged from before."""
     collection = get_collection(collection_name)
-    return collection.query(query_embeddings=embed([query_text]), n_results=top_k)
+    kwargs = {"query_embeddings": embed([query_text]), "n_results": top_k}
+    if where:
+        kwargs["where"] = where
+    return collection.query(**kwargs)

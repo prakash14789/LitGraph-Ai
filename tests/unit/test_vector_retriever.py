@@ -82,6 +82,23 @@ def test_retrieve_seeds_dedupes_paper_shared_by_entity_and_chunk(monkeypatch):
     assert seeds.paper_ids == ["shared-paper"]  # counted once, not twice
 
 
+def test_retrieve_seeds_scopes_chunk_search_but_not_entity_search(monkeypatch):
+    # POLISH-005b — chunks carry collection_id in Chroma metadata (a direct
+    # `where` filter); entities deliberately don't (collection-agnostic by
+    # design, see this module's own docstring) — the entity call must get
+    # no `where` at all even when collection_id is given.
+    entity_result = _entity_result(ids=[], metadatas=[], distances=[])
+    chunk_result = _chunk_result(documents=[], metadatas=[], distances=[])
+    mock = MagicMock(side_effect=[entity_result, chunk_result])
+    monkeypatch.setattr(vector_retriever, "query_similar", mock)
+
+    vector_retriever.retrieve_seeds("query", collection_id="COLL-1")
+
+    entity_call, chunk_call = mock.call_args_list
+    assert entity_call.kwargs.get("where") is None
+    assert chunk_call.kwargs.get("where") == {"collection_id": "COLL-1"}
+
+
 def test_retrieve_seeds_handles_fully_empty_corpus(monkeypatch):
     empty_entities = _entity_result(ids=[], metadatas=[], distances=[])
     empty_chunks = _chunk_result(documents=[], metadatas=[], distances=[])

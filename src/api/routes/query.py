@@ -75,11 +75,21 @@ async def query_compare(
     async with AsyncSessionLocal() as graphrag_db, AsyncSessionLocal() as vanilla_db:
         graphrag_result, vanilla_result = await asyncio.gather(
             query_graphrag(
-                QueryRequest(query=request.query, top_k=request.top_k, hops=request.hops),
+                QueryRequest(
+                    query=request.query,
+                    top_k=request.top_k,
+                    hops=request.hops,
+                    collection_id=request.collection_id,
+                ),
                 graphrag_db,
             ),
             query_vanilla(
-                VanillaQueryRequest(query=request.query, top_k=request.vanilla_top_k), vanilla_db
+                VanillaQueryRequest(
+                    query=request.query,
+                    top_k=request.vanilla_top_k,
+                    collection_id=request.collection_id,
+                ),
+                vanilla_db,
             ),
         )
     total_latency_ms = int((time.monotonic() - start) * 1000)
@@ -127,8 +137,9 @@ async def query_graphrag(
 ) -> QueryResponse:
     start = time.monotonic()
 
-    seeds = retrieve_seeds(request.query)
-    subgraph = await retrieve_subgraph(seeds, hops=request.hops)
+    collection_id = str(request.collection_id) if request.collection_id else None
+    seeds = retrieve_seeds(request.query, collection_id=collection_id)
+    subgraph = await retrieve_subgraph(seeds, hops=request.hops, collection_id=collection_id)
     ranked = score_subgraph(subgraph, seeds, top_k=request.top_k)
     context = build_context(ranked, seeds)
     answer = await asyncio.to_thread(generate_graphrag_answer, request.query, context)
@@ -207,7 +218,8 @@ async def query_vanilla(
 ) -> VanillaQueryResponse:
     start = time.monotonic()
 
-    chunks = retrieve(request.query, top_k=request.top_k)
+    collection_id = str(request.collection_id) if request.collection_id else None
+    chunks = retrieve(request.query, top_k=request.top_k, collection_id=collection_id)
     generated = await asyncio.to_thread(generate_answer, request.query, chunks)
     titles = await _paper_titles(db, {c.paper_id for c in chunks})
 

@@ -44,14 +44,17 @@ export interface JobStatus {
 }
 
 export const litgraphApi = {
-  // Query — no collection_id param. Per RETRIEVAL-001's MVP scoping
-  // decision, retrieval is global across all ingested papers, not filtered
-  // by collection. Don't add a collectionId argument here until
-  // POLISH-005b actually implements collection-filtered retrieval on the
-  // backend.
-  query: (query: string) => api.post<QueryResponse>("/query", { query }),
-  queryVanilla: (query: string) =>
-    api.post<VanillaQueryResponse>("/query/vanilla", { query }),
+  // Query — collectionId (POLISH-005b) scopes both GraphRAG's retrieval and
+  // vanilla RAG's chunk search to one collection; omit/undefined for the
+  // original global-corpus behavior. compareQuery doesn't take one yet —
+  // ComparePage.tsx wasn't in this pass's scope, left global on purpose.
+  query: (query: string, collectionId?: string | null) =>
+    api.post<QueryResponse>("/query", { query, collection_id: collectionId || undefined }),
+  queryVanilla: (query: string, collectionId?: string | null) =>
+    api.post<VanillaQueryResponse>("/query/vanilla", {
+      query,
+      collection_id: collectionId || undefined,
+    }),
   compareQuery: (query: string) =>
     api.post<CompareQueryResponse>("/query/compare", { query }),
   voteCompare: (queryLogId: string, verdict: CompareVerdict) =>
@@ -74,8 +77,8 @@ export const litgraphApi = {
   assignPaperCollection: (id: string, collectionId: string | null) =>
     api.patch<Paper>(`/papers/${id}`, { collection_id: collectionId }),
 
-  // Collections (POLISH-005 — organizational only, see the `query` note
-  // above: does NOT scope Chat/Graph retrieval, Papers page filter only).
+  // Collections (POLISH-005 — organizational CRUD; POLISH-005b then added
+  // the collectionId params above/below that actually scope retrieval).
   getCollections: () => api.get<Collection[]>("/collections"),
   createCollection: (name: string, description?: string) =>
     api.post<Collection>("/collections", { name, description }),
@@ -84,11 +87,17 @@ export const litgraphApi = {
   deleteCollection: (id: string) => api.delete(`/collections/${id}`),
 
   // Graph
-  getGraphOverview: () => api.get<GraphOverview>("/graph/overview"),
+  getGraphOverview: (collectionId?: string | null) =>
+    api.get<GraphOverview>("/graph/overview", {
+      params: collectionId ? { collection_id: collectionId } : {},
+    }),
   // entityId omitted -> backend returns a capped whole-graph snapshot
-  // (GRAPH-003's "full graph loads on page visit").
-  getSubgraph: (entityId?: string, hops = 2) =>
-    api.get<GraphSubgraphResponse>("/graph/subgraph", { params: { entity_id: entityId, hops } }),
+  // (GRAPH-003's "full graph loads on page visit"); collectionId (POLISH-
+  // 005b) scopes that snapshot to one collection either way.
+  getSubgraph: (entityId?: string, hops = 2, collectionId?: string | null) =>
+    api.get<GraphSubgraphResponse>("/graph/subgraph", {
+      params: { entity_id: entityId, hops, collection_id: collectionId || undefined },
+    }),
   getEntity: (id: string) => api.get<EntityDetailResponse>(`/graph/entity/${id}`),
   searchEntities: (q: string, type?: string) =>
     api.get<SearchResponse>("/graph/search", { params: { q, type } }),

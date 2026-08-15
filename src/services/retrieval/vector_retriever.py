@@ -25,11 +25,19 @@ result lists, not an error, so entities naturally comes back `[]` and the
 seed set silently falls back to chunks only — exactly the ticket's
 acceptance criterion.
 
-Global search across the full corpus, not scoped by collection_id — see
-the ticket's own "MVP scoping decision": chunk/entity metadata doesn't
-carry collection_id, and entity resolution intentionally merges the same
-entity across every paper, so per-collection scoping is real design work
-deferred to POLISH-005, not built here.
+POLISH-005b — collection_id scoping, added 2026-08-15: chunk search takes a
+direct Chroma `where` filter (embedding_storage.py stamps collection_id
+into chunk metadata at write time). Entity search deliberately stays
+unscoped here — entity_embeddings metadata never carries collection_id
+(entity resolution merges the same shared entity across every paper/
+collection, so tagging one node with a single collection_id would be
+wrong), matching POLISH-005b's own recommended decision: entities stay
+collection-agnostic, only paper/chunk provenance is scoped. An
+out-of-collection entity seed isn't a correctness problem even though it's
+not pre-filtered here — graph_retriever.py's own collection_id filter
+prunes it downstream (as an orphan, once its edges to out-of-collection
+papers are cut), the same way a real collection-agnostic shared entity
+survives if it has even one in-collection connection.
 """
 
 from dataclasses import dataclass
@@ -62,10 +70,13 @@ class SeedResult:
 
 
 def retrieve_seeds(
-    query: str, entity_top_k: int | None = None, chunk_top_k: int | None = None
+    query: str,
+    entity_top_k: int | None = None,
+    chunk_top_k: int | None = None,
+    collection_id: str | None = None,
 ) -> SeedResult:
     entities, entity_source_papers = _search_entities(query, entity_top_k or settings.entity_top_k)
-    chunks = _search_chunks(query, chunk_top_k or settings.vector_top_k)
+    chunks = _search_chunks(query, chunk_top_k or settings.vector_top_k, collection_id)
 
     paper_ids = {c.paper_id for c in chunks if c.paper_id} | entity_source_papers
     return SeedResult(entities=entities, chunks=chunks, paper_ids=sorted(paper_ids))
@@ -95,8 +106,9 @@ def _search_entities(query: str, top_k: int) -> tuple[list[EntitySeed], set[str]
     return entities, source_papers
 
 
-def _search_chunks(query: str, top_k: int) -> list[ChunkSeed]:
-    result = query_similar(settings.chroma_collection_chunks, query, top_k=top_k)
+def _search_chunks(query: str, top_k: int, collection_id: str | None = None) -> list[ChunkSeed]:
+    where = {"collection_id": collection_id} if collection_id else None
+    result = query_similar(settings.chroma_collection_chunks, query, top_k=top_k, where=where)
 
     documents = result["documents"][0] if result.get("documents") else []
     metadatas = result["metadatas"][0] if result.get("metadatas") else []

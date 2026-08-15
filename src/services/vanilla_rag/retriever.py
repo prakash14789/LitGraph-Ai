@@ -17,9 +17,19 @@ class RetrievedChunk:
     score: float  # cosine similarity (1 - Chroma's cosine distance) — higher is better
 
 
-def retrieve(query: str, top_k: int | None = None) -> list[RetrievedChunk]:
+def retrieve(
+    query: str, top_k: int | None = None, collection_id: str | None = None
+) -> list[RetrievedChunk]:
+    """collection_id (POLISH-005b) — chunks carry it directly in Chroma
+    metadata (embedding_storage.py), so this is a straight `where` filter,
+    unlike vector_retriever.py's entity search which has no such filter
+    (see that module's own docstring for why)."""
+    where = {"collection_id": collection_id} if collection_id else None
     result = query_similar(
-        settings.chroma_collection_chunks, query, top_k=top_k or settings.vector_top_k
+        settings.chroma_collection_chunks,
+        query,
+        top_k=top_k or settings.vector_top_k,
+        where=where,
     )
 
     documents = result["documents"][0] if result.get("documents") else []

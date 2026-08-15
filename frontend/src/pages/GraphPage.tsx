@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -18,12 +19,9 @@ import type { EntityDetailResponse, GraphNode, SubgraphEdge } from "@/types";
 // client-side over the already-loaded set — no re-fetch, this reads as
 // "hide/show what's on screen", not "query a different graph".
 //
-// Collection selector intentionally omitted: GRAPH-001's endpoints don't
-// take a collection_id (same MVP scoping decision as RETRIEVAL-001/FE-003)
-// — a selector here would either do nothing or misleadingly imply
-// filtering, so it's left out entirely rather than shown disabled for a
-// concept (per-collection *graph* filtering) that has no partial version
-// to gesture at yet.
+// Collection selector (POLISH-005b): re-fetches the subgraph scoped to the
+// chosen collection — a real backend filter now, not the client-side
+// hide/show the type/relationship chips above do.
 const LAYOUT_OPTIONS: { value: GraphLayoutName; label: string }[] = [
   { value: "cose", label: "Force" },
   { value: "breadthfirst", label: "Hierarchy" },
@@ -63,14 +61,21 @@ export function GraphPage() {
   const [entityDetail, setEntityDetail] = useState<EntityDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  const [collectionId, setCollectionId] = useState<string | null>(null);
+  const collectionsQuery = useQuery({
+    queryKey: ["collections"],
+    queryFn: () => litgraphApi.getCollections().then((r) => r.data),
+  });
+  const collections = collectionsQuery.data ?? [];
+
   useEffect(() => {
     const entityId = searchParams.get("entity_id");
     const highlight = searchParams.get("highlight");
     setLoading(true);
     setError(null);
     const load = entityId
-      ? litgraphApi.getSubgraph(entityId, 2)
-      : litgraphApi.getSubgraph(undefined);
+      ? litgraphApi.getSubgraph(entityId, 2, collectionId)
+      : litgraphApi.getSubgraph(undefined, 2, collectionId);
     if (entityId && highlight) setHighlightIds(highlight.split(","));
     load
       .then(({ data }) => {
@@ -79,9 +84,11 @@ export function GraphPage() {
       })
       .catch(() => setError("Failed to load graph."))
       .finally(() => setLoading(false));
-    // Only ever consumes the params this page was navigated to with.
+    // Only reacts to the URL params this page was navigated to with, plus
+    // the collection toolbar selector — not searchParams itself (that
+    // would re-run on every navigation, not just the initial one).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [collectionId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -162,6 +169,20 @@ export function GraphPage() {
           {LAYOUT_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={collectionId ?? ""}
+          onChange={(e) => setCollectionId(e.target.value || null)}
+          className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          aria-label="Scope graph to a collection"
+        >
+          <option value="">All papers</option>
+          {collections.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
             </option>
           ))}
         </select>

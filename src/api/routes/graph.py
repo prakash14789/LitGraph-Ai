@@ -22,7 +22,10 @@ from src.graph.queries import (
     WHOLE_GRAPH_EDGES,
     WHOLE_GRAPH_NODES,
 )
-from src.services.retrieval.graph_retriever import retrieve_subgraph
+from src.services.retrieval.graph_retriever import (
+    resolve_collection_paper_seed_ids,
+    retrieve_subgraph,
+)
 from src.services.retrieval.vector_retriever import EntitySeed, SeedResult
 
 router = APIRouter()
@@ -67,16 +70,40 @@ _USAGE_COUNT_QUERY_BY_LABEL = {
 
 
 @router.get("/graph/overview", response_model=GraphOverview)
-async def graph_overview() -> GraphOverview:
+async def graph_overview(
+    collection_id: str | None = Query(
+        None, description="POLISH-005b — scope counts to one collection"
+    ),
+) -> GraphOverview:
+    if collection_id is not None:
+        # Same seeded-traversal path /graph/subgraph uses when scoped — counts
+        # what that endpoint would actually show, not a separate Cypher
+        # aggregate that could drift out of sync with it.
+        node_rows, edge_rows = await _collection_graph_rows(collection_id)
+        node_counts: dict[str, int] = {}
+        for row in node_rows:
+            label = row["labels"][0] if row["labels"] else None
+            if label:
+                node_counts[label] = node_counts.get(label, 0) + 1
+        edge_counts: dict[str, int] = {}
+        for row in edge_rows:
+            edge_counts[row["rel_type"]] = edge_counts.get(row["rel_type"], 0) + 1
+        return GraphOverview(
+            total_nodes=len(node_rows),
+            total_edges=len(edge_rows),
+            node_counts=node_counts,
+            edge_counts=edge_counts,
+        )
+
     driver = get_driver()
     async with driver.session() as session:
         node_result = await session.run(NODE_COUNTS_BY_LABEL)
-        node_rows = [r async for r in node_result]
+        node_rows_raw = [r async for r in node_result]
         edge_result = await session.run(EDGE_COUNTS_BY_TYPE)
-        edge_rows = [r async for r in edge_result]
+        edge_rows_raw = [r async for r in edge_result]
 
-    node_counts = {r["label"]: r["count"] for r in node_rows if r["label"]}
-    edge_counts = {r["rel_type"]: r["count"] for r in edge_rows}
+    node_counts = {r["label"]: r["count"] for r in node_rows_raw if r["label"]}
+    edge_counts = {r["rel_type"]: r["count"] for r in edge_rows_raw}
     return GraphOverview(
         total_nodes=sum(node_counts.values()),
         total_edges=sum(edge_counts.values()),
@@ -91,8 +118,17 @@ async def graph_subgraph(
         None, description="Neo4j elementId to expand from; omit for a capped whole-graph snapshot"
     ),
     hops: int = Query(2, ge=1, le=4),
+    collection_id: str | None = Query(None, description="POLISH-005b — scope to one collection"),
 ) -> GraphSubgraphResponse:
-    if entity_id is None:
+    if entity_id is None and collection_id is not None:
+        # GRAPH-003's whole-graph snapshot, scoped: seed from every Paper in
+        # the collection instead of an unscoped MATCH (n), same
+        # retrieve_subgraph traversal + collection_id post-filter the
+        # entity_id path below already uses (graph_retriever.py's own
+        # docstring explains why the filter is post-traversal, not a Cypher
+        # WHERE — entity seeds are collection-agnostic by design).
+        node_rows, edge_rows = await _collection_graph_rows(collection_id)
+    elif entity_id is None:
         # GRAPH-003: "full graph loads on page visit" — the Explorer's
         # default view, no seed entity to expand from.
         node_rows, edge_rows = await _whole_graph_rows()
@@ -106,7 +142,7 @@ async def graph_subgraph(
             chunks=[],
             paper_ids=[],
         )
-        subgraph = await retrieve_subgraph(seeds, hops=hops)
+        subgraph = await retrieve_subgraph(seeds, hops=hops, collection_id=collection_id)
         if not subgraph.nodes:
             # Also hits for a real entity with zero relationships (a state
             # the write path never actually produces — every entity gets at
@@ -179,6 +215,42 @@ async def _whole_graph_rows() -> tuple[list[dict], list[dict]]:
             "rel_props": dict(r["rel_props"]),
         }
         for r in edge_rows_raw
+    ]
+    return node_rows, edge_rows
+
+
+async def _collection_graph_rows(collection_id: str) -> tuple[list[dict], list[dict]]:
+    """Same row shape as _whole_graph_rows() (plain dicts, not GraphNode/
+    GraphEdge) so both feed the same downstream node/edge-building code in
+    graph_subgraph(). Seeds from every Paper in the collection and reuses
+    retrieve_subgraph's own 2-hop traversal + collection_id post-filter —
+    embeddings are already stripped by graph_retriever.py's _clean_props,
+    same as the unscoped whole-graph path strips them itself."""
+    seed_ids = await resolve_collection_paper_seed_ids(collection_id)
+    if not seed_ids:
+        return [], []
+    seeds = SeedResult(
+        entities=[
+            EntitySeed(node_id=sid, entity_type="", canonical_name="", score=1.0)
+            for sid in seed_ids
+        ],
+        chunks=[],
+        paper_ids=[],
+    )
+    subgraph = await retrieve_subgraph(
+        seeds, hops=2, collection_id=collection_id, max_nodes=_MAX_FULL_GRAPH_NODES
+    )
+    node_rows = [
+        {"id": n.node_id, "labels": n.labels, "properties": n.properties} for n in subgraph.nodes
+    ]
+    edge_rows = [
+        {
+            "a_id": e.source_id,
+            "b_id": e.target_id,
+            "rel_type": e.rel_type,
+            "rel_props": e.properties,
+        }
+        for e in subgraph.edges
     ]
     return node_rows, edge_rows
 

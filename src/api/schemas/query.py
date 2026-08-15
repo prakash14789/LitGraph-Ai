@@ -1,6 +1,8 @@
 """Request/response models for POST /query/vanilla and POST /query (GraphRAG,
 RETRIEVAL-005)."""
 
+import uuid
+
 from pydantic import BaseModel
 
 from src.models.query_log import CompareVerdict
@@ -9,6 +11,7 @@ from src.models.query_log import CompareVerdict
 class VanillaQueryRequest(BaseModel):
     query: str
     top_k: int | None = None  # defaults to settings.vector_top_k if omitted
+    collection_id: uuid.UUID | None = None  # POLISH-005b — omit for global search
 
 
 class SourceChunk(BaseModel):
@@ -33,6 +36,7 @@ class QueryRequest(BaseModel):
     query: str
     top_k: int | None = None  # ranked nodes to keep — defaults to settings.context_max_nodes
     hops: int | None = None  # graph traversal depth — defaults to settings.graph_traversal_hops
+    collection_id: uuid.UUID | None = None  # POLISH-005b — omit for global search
 
 
 class Citation(BaseModel):
@@ -85,6 +89,7 @@ class CompareQueryRequest(BaseModel):
     top_k: int | None = None  # graphrag ranked-node top_k
     hops: int | None = None  # graphrag traversal depth
     vanilla_top_k: int | None = None  # vanilla chunk top_k
+    collection_id: uuid.UUID | None = None  # POLISH-005b — scopes both sides identically
 
 
 class CompareQueryResponse(BaseModel):

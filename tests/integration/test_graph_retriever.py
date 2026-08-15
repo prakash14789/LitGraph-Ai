@@ -113,6 +113,52 @@ async def test_paper_id_seed_resolves_to_paper_elementid():
         await _cleanup(tag)
 
 
+async def test_collection_filter_drops_other_collections_paper_and_its_private_node_but_keeps_shared_entity():
+    # POLISH-005b, real Cypher end-to-end: tag's own Paper -> A -> B -> C
+    # chain gets collection_id "coll-a"; a second, unrelated paper in
+    # "coll-b" also uses shared Method C plus its own private Author.
+    tag = f"GR-TEST-{uuid.uuid4()}"
+    try:
+        ids = await _build_graph(tag)
+        await _run(
+            "MATCH (p:Paper {paper_id: $paper_id}) SET p.collection_id = 'coll-a'",
+            paper_id=ids["paper_id"],
+        )
+        other_paper_id = f"{tag}-other-paper"
+        rows = await _run(
+            """
+            MATCH (c:Method) WHERE elementId(c) = $c_id
+            CREATE (p2:Paper {paper_id: $other_paper_id, title: 'other', collection_id: 'coll-b'})
+            CREATE (au2:Author {name: $other_author})
+            CREATE (p2)-[:AUTHORED_BY]->(au2)
+            CREATE (p2)-[:USES_METHOD {confidence: 0.5}]->(c)
+            RETURN elementId(p2) AS p2, elementId(au2) AS au2
+            """,
+            c_id=ids["c"],
+            other_paper_id=other_paper_id,
+            other_author=f"{tag}-other-author",
+        )
+        other_ids = dict(rows[0])
+
+        sub = await graph_retriever.retrieve_subgraph(
+            _seed(ids["a"]), hops=3, collection_id="coll-a"
+        )
+
+        node_ids = {n.node_id for n in sub.nodes}
+        assert ids["p"] in node_ids  # in-collection paper survives
+        assert ids["c"] in node_ids  # shared entity survives (still tied to p1)
+        assert other_ids["p2"] not in node_ids  # other collection's paper dropped
+        assert other_ids["au2"] not in node_ids  # its private entity orphaned+dropped
+    finally:
+        await _cleanup(tag)
+        await _run(
+            "MATCH (n) WHERE n.paper_id = $other_paper_id OR n.name STARTS WITH $tag "
+            "DETACH DELETE n",
+            other_paper_id=other_paper_id,
+            tag=tag,
+        )
+
+
 async def test_relationship_type_filter_only_returns_matching_edges():
     tag = f"GR-TEST-{uuid.uuid4()}"
     try:
