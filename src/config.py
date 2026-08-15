@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     # live-testing). Same _KeyRing, no new code needed — just extends the
     # list in llm_client.py's _API_KEYS["groq"].
     groq_api_key_fallback_2: str = ""
+    # Optional 4th Groq key — added 2026-08-15 (EVAL-002). Same _KeyRing.
+    groq_api_key_fallback_3: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # OpenRouter — single OpenAI-compatible endpoint proxying many vendors'

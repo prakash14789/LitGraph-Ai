@@ -49,6 +49,7 @@ _API_KEYS = {
             settings.groq_api_key,
             settings.groq_api_key_fallback,
             settings.groq_api_key_fallback_2,
+            settings.groq_api_key_fallback_3,
         ]
         if k
     ],

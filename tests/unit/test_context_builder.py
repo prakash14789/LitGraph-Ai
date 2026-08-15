@@ -116,6 +116,29 @@ def test_chunks_included_and_graceful_truncation_under_tight_budget():
     assert tight.token_count <= 15
 
 
+def test_entities_trimmed_to_leave_room_for_chunks():
+    # EVAL-002 finding: a large ranked subgraph (common on multi-hop/
+    # comparison questions spanning 2+ papers) used to be able to consume
+    # the whole token budget before any raw chunk text was added — starving
+    # exactly the fallback a precise-textual-nuance question needs most.
+    # 30 entities, each with a long-ish description, comfortably exceeds
+    # entities_budget under a small max_tokens; the chunk must still appear.
+    nodes = [_scored(f"m{i}", ["Method"], canonical_name=f"Method-{i}" * 10) for i in range(30)]
+    ranked = RankedSubgraph(nodes=nodes, edges=[])
+    chunks = [
+        ChunkSeed(paper_id="p1", text="the precise quoted nuance", section_name="intro", score=0.9)
+    ]
+
+    ctx = build_context(ranked, _seeds(chunks), max_tokens=400)
+
+    assert ctx.truncated is True
+    assert "RELEVANT TEXT CHUNKS:" in ctx.text
+    assert "the precise quoted nuance" in ctx.text
+    # Lowest-ranked entity (last in the best-first-ranked list) got dropped
+    # to make room, not just the chunk silently omitted.
+    assert "Method-29" not in ctx.text
+
+
 def test_empty_graph_falls_back_to_chunks_only():
     ranked = RankedSubgraph(nodes=[], edges=[])
     chunks = [ChunkSeed(paper_id="p1", text="fallback text", section_name="abstract", score=0.5)]
