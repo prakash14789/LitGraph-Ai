@@ -58,7 +58,9 @@ _API_KEYS = {
         ]
         if k
     ],
-    "openrouter": [settings.openrouter_api_key],
+    "openrouter": [
+        k for k in [settings.openrouter_api_key, settings.openrouter_api_key_fallback] if k
+    ],
     "cerebras": [settings.cerebras_api_key],
     "huggingface": [settings.huggingface_api_key],
     "ollama": ["ollama"],
@@ -81,6 +83,11 @@ _API_KEYS = {
 _FALLBACK_PROVIDERS = ["gemini", "groq", "huggingface", "cerebras", "openrouter", "ollama"]
 _FALLBACK_MODEL = {
     "gemini": "gemini-flash-latest",
+    # Reverted 2026-08-16: user clarified "qwen everywhere" meant the local
+    # Ollama swap only (see EXTRACTION_MODEL's .env comment) — Groq itself,
+    # primary or fallback, stays on llama-3.3-70b-versatile. This entry is
+    # currently unreachable dead code anyway (groq IS the configured primary
+    # provider, so the chain never fails *over to* it), kept in sync anyway.
     "groq": "llama-3.3-70b-versatile",
     # EVAL-002 live finding: this key's account has no Llama model access —
     # client.models.list() returned only zai-glm-4.7/gpt-oss-120b/gemma-4-31b,
@@ -89,7 +96,15 @@ _FALLBACK_MODEL = {
     # unusable until then, same as any exhausted-quota provider in this chain.
     "cerebras": "gpt-oss-120b",
     "huggingface": "meta-llama/Llama-3.3-70B-Instruct",
-    "openrouter": "openai/gpt-oss-20b:free",
+    # User-provided 2026-08-16 specifically to speed up this session's
+    # RoBERTa/ELECTRA/ALBERT reprocess once Groq+Gemini were both exhausted
+    # for the day — a free, large (550B-A55B MoE) reasoning-capable model.
+    # Reasoning left off (no `reasoning` extra_body below): OpenRouter's own
+    # sample code shows it as an opt-in flag, off by default, and turning it
+    # on would risk the exact <think>-block token-budget trap qwen hit on
+    # Groq — needed here even less, since our calls want terse structured
+    # output, not multi-turn reasoning.
+    "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
     # Switched from llama3.1:8b to qwen2.5:14b (2026-08-16, user request) —
     # nearly 2x the parameters, still free/local/unlimited. Live finding
     # this session: llama3.1:8b's entity-resolution verification calls gave
@@ -246,6 +261,15 @@ def complete(
     while True:
         _rate_limiter.wait()
         effective_model = ring.model_override() or model
+        # Qwen models are reasoning models by default — live finding
+        # (2026-08-16): a bare call spent the entire max_tokens budget
+        # inside a <think>...</think> block and never reached the actual
+        # answer (confirmed: 500 tokens wasn't even enough to finish
+        # thinking on a one-line prompt). reasoning_effort="none" is Groq's
+        # documented switch to turn that off — needed for every terse
+        # structured-output use case here (JSON extraction, YES/NO
+        # verification, judge scores), not just one call site.
+        extra = {"reasoning_effort": "none"} if effective_model.startswith("qwen/") else {}
         try:
             response = _client(ring).chat.completions.create(
                 model=effective_model,
@@ -255,7 +279,36 @@ def complete(
                 ],
                 max_tokens=max_tokens,
                 temperature=temperature,
+                **extra,
             )
+            if not response.choices:
+                # EVAL-002 live finding: an upstream 502 from OpenRouter's
+                # underlying model host (nvidia/nemotron-3-ultra-550b-a55b:free)
+                # came back as a normal 200 response with choices=None and the
+                # error detail buried in a non-standard `error` field instead
+                # of a raised HTTPStatusError — the openai SDK has nothing to
+                # catch there, so this silently crashed with an unhandled
+                # TypeError on response.choices[0] the moment it happened,
+                # losing an entire paper's already-completed extraction work
+                # (this call is typically one of the last in a long run).
+                # Treated exactly like a retryable API error: advance the
+                # ring first, only back off once every provider is exhausted.
+                detail = getattr(response, "error", None)
+                logger.warning(
+                    "llm.empty_choices",
+                    provider=ring.provider(),
+                    model=effective_model,
+                    detail=detail,
+                )
+                if ring.advance():
+                    continue
+                backoff_attempt += 1
+                if backoff_attempt >= _MAX_ATTEMPTS:
+                    raise RuntimeError(f"LLM call returned no choices: {detail}")
+                backoff = 2**backoff_attempt
+                logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
+                time.sleep(backoff)
+                continue
             usage = response.usage
             logger.info(
                 "llm.completion",

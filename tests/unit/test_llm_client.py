@@ -40,6 +40,16 @@ def _fake_response(text: str = "ok"):
     return response
 
 
+def _empty_choices_response(error_detail="upstream error"):
+    # EVAL-002 live finding: OpenRouter's upstream-502 response — a normal
+    # 200 with choices=None and the error tucked in a non-standard field,
+    # not a raised exception.
+    response = MagicMock()
+    response.choices = None
+    response.error = error_detail
+    return response
+
+
 # _key_ring is a module-level singleton that permanently advances on quota
 # errors (by design — see its docstring) — every test patches it fresh so
 # one test's rotation can't bleed into the next.
@@ -215,6 +225,79 @@ def test_complete_fails_over_on_server_overload_not_just_quota():
     assert result == "answer from groq"
     mock_sleep.assert_not_called()
     assert ring.provider() == "groq"
+
+
+# --- EVAL-002 live finding: OpenRouter's empty-choices-on-502 response -----
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+def test_complete_fails_over_when_response_has_no_choices():
+    # Previously an unhandled TypeError on response.choices[0] — nothing in
+    # the except clauses catches it, so it crashed the whole call (and, live,
+    # an entire paper's already-completed extraction work) instead of
+    # advancing to the next provider like a real API error does.
+    with (
+        patch("src.utils.llm_client._API_KEYS", _FAKE_KEYS),
+        patch("src.utils.llm_client.settings.llm_provider", "gemini"),
+    ):
+        ring = _KeyRing()
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _empty_choices_response("upstream 502"),
+        _fake_response("answer from groq"),
+    ]
+    with (
+        patch("src.utils.llm_client._key_ring", ring),
+        patch("src.utils.llm_client._client", return_value=client),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = complete("sys", "user", model="gemini-flash-latest")
+
+    assert result == "answer from groq"
+    mock_sleep.assert_not_called()
+    assert ring.provider() == "groq"
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["only-key"]))
+@patch("src.utils.llm_client._client")
+def test_complete_raises_after_exhausting_providers_on_empty_choices(mock_client):
+    client = MagicMock()
+    client.chat.completions.create.return_value = _empty_choices_response("still 502")
+    mock_client.return_value = client
+
+    with patch("time.sleep"), pytest.raises(RuntimeError, match="still 502"):
+        complete("sys", "user", model="gemini-2.5-flash")
+
+
+# --- qwen reasoning-model handling ---------------------------------------
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["only-key"]))
+@patch("src.utils.llm_client._client")
+def test_qwen_model_gets_reasoning_effort_none(mock_client):
+    client = MagicMock()
+    client.chat.completions.create.return_value = _fake_response('{"score": 1.0}')
+    mock_client.return_value = client
+
+    complete("sys", "user", model="qwen/qwen3.6-27b")
+
+    assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "none"
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._key_ring", _KeyRing(["only-key"]))
+@patch("src.utils.llm_client._client")
+def test_non_qwen_model_gets_no_reasoning_effort_kwarg(mock_client):
+    client = MagicMock()
+    client.chat.completions.create.return_value = _fake_response("answer")
+    mock_client.return_value = client
+
+    complete("sys", "user", model="llama-3.3-70b-versatile")
+
+    assert "reasoning_effort" not in client.chat.completions.create.call_args.kwargs
 
 
 # --- EVAL-002 FIX E: caller-supplied independent key_ring ---------------

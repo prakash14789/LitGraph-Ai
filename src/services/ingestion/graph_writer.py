@@ -171,8 +171,15 @@ async def write_named_entity(
 async def write_claim(paper_id: str, text: str, claim_type: str, confidence: float) -> str:
     """Not run through entity_resolver — see module docstring. Deduped by a
     content hash of (paper_id, text) instead, so reprocessing the same
-    paper doesn't duplicate the same claim."""
-    claim_id = hashlib.sha256(f"{paper_id}:{text}".encode()).hexdigest()[:24]
+    paper doesn't duplicate the same claim. Hashed on a case/whitespace-
+    normalized copy of the text (live finding: the same claim re-extracted
+    with only a case difference, e.g. a title-cased vs sentence-cased
+    re-run, hashed to a different id and got saved twice) — the stored
+    `text` property itself keeps its original casing, only the dedup key
+    is normalized."""
+    claim_id = hashlib.sha256(f"{paper_id}:{' '.join(text.lower().split())}".encode()).hexdigest()[
+        :24
+    ]
     vector = embed([text])[0]
     props = {
         "claim_id": claim_id,

@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # gemini-free-tier-daily-cap.md's hard-won methodology lesson before
     # assuming this one's headroom either).
     openrouter_api_key: str = ""
+    # 2nd OpenRouter key — user-provided 2026-08-16 specifically to speed up
+    # this session's RoBERTa/ELECTRA/ALBERT reprocess once Groq+Gemini were
+    # both exhausted for the day, same multi-key pattern as Groq's ring.
+    openrouter_api_key_fallback: str = ""
     # Cerebras — OpenAI-compatible endpoint, Llama models. Added 2026-08-16
     # (EVAL-002) as a single test key, scoped by the user to only this
     # session's RoBERTa/ELECTRA reprocess (not a general-purpose key like

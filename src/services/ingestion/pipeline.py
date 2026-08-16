@@ -110,11 +110,15 @@ _EMAIL_RE = re.compile(r"[\w.]+@[\w.]+\.\w+")
 # about the paper's real contribution, attached to the wrong target name by
 # the model). Same grounding idea as entity_extractor's FIX-7/8 — purely
 # structural, no entity/paper name ever referenced in code: the relation's
-# own evidence must actually contain the name it claims to support. 60, not
+# own evidence must actually contain the name it claims to support. 70, not
 # entity_extractor's 40 — short acronym-style names (e.g. "BERTBASE") can
-# clear a lower bar against unrelated text by coincidence (measured live:
-# 50.0 against text that never mentions it), so this needs a firmer floor.
-_INTRODUCES_GROUNDING_THRESHOLD = 60.0
+# clear a lower bar against unrelated text by coincidence: 50.0 against text
+# that never mentions it at all, and 66.7 against text that merely shares a
+# common substring ("BERT") with the target without the target's full name
+# ("BERTBASE") appearing anywhere — both measured live. 70 clears both of
+# those false-positive floors while still passing genuine grounding (a
+# target actually named in its evidence scores 100).
+_INTRODUCES_GROUNDING_THRESHOLD = 70.0
 
 _MIN_CLAIM_WORDS = 5
 _CLAIM_TITLE_MATCH_THRESHOLD = 85.0

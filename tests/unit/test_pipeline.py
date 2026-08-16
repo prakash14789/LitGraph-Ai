@@ -175,6 +175,16 @@ def test_introduces_not_grounded_when_evidence_never_mentions_target():
     assert not _is_introduces_grounded(r)
 
 
+def test_introduces_not_grounded_on_shared_substring_without_full_name():
+    # Live finding (ALBERT/RoBERTa reprocess): "BERTBASE" partial-ratio's to
+    # 66.7 against text that only contains "BERT" as part of an unrelated
+    # word ("DistilBERT") — well past the naive 50.0 floor a plain "different
+    # text" case scores, so the threshold has to clear this too, not just
+    # completely-unrelated text.
+    r = _relation("INTRODUCES", "BERTBASE", "DistilBERT, a distilled version of BERT.")
+    assert not _is_introduces_grounded(r)
+
+
 # --- EVAL-002 FIX D backstop: TRAINED_ON dropped when the same pair also
 # gets EVALUATES_ON in this run --------------------------------------------
 

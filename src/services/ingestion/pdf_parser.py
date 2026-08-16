@@ -95,6 +95,22 @@ _MAX_PREAMBLE_SCAN_LINES = 40
 # (e.g. "Yinhan Liu∗§", RoBERTa's real PDF) — trailing only, so a genuine
 # name character is never eaten.
 _FOOTNOTE_MARKER_RE = re.compile(r"[†‡∗\*§]+$")
+# EVAL-002 live finding (ALBERT's real PDF): a numbered-affiliation key line
+# ("1Google Research  2Toyota Technological Institute at Chicago") survives
+# _NOISE_LINE_RE (that regex only matches an institution keyword at the very
+# START of the line, but here a digit sits there instead) and then survives
+# the comma-split below too, since a two-affiliation line has no comma
+# between them — it becomes one bogus "author". Checked per split TOKEN,
+# not just per whole line, so it also catches a numbered affiliation that
+# rides along on the same line as real names ("Name A1, Name B2, 1Google
+# Research"). A real author name never starts with a digit glued straight
+# to a letter — that leading "^\d+[A-Za-z]" shape alone is a generic,
+# paper-independent signal, not a specific institution name.
+_AFFILIATION_TOKEN_RE = re.compile(
+    r"^\d+[A-Za-z]"
+    r"|\b(university|department|institute|laboratory|corporation|technologies|technological)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -284,7 +300,11 @@ def _extract_metadata(doc: fitz.Document) -> tuple[str | None, list[str] | None]
             # splits correctly since the split happens on that line alone.
             authors = []
             for line_text in author_lines:
-                authors.extend(a.strip() for a in re.split(r",| and ", line_text) if a.strip())
+                authors.extend(
+                    a.strip()
+                    for a in re.split(r",| and ", line_text)
+                    if a.strip() and not _AFFILIATION_TOKEN_RE.search(a.strip())
+                )
             # Live finding (BERT's real PDF): some bylines have no comma/
             # "and" separator at all ("Jacob Devlin Ming-Wei Chang Kenton
             # Lee Kristina Toutanova" as one run-on line) — the split above

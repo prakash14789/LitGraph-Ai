@@ -273,6 +273,39 @@ def test_excludes_email_block_wrapped_across_two_lines_from_authors(wrapped_emai
     assert result.authors == ["Yinhan Liu", "Myle Ott"]
 
 
+@pytest.fixture
+def numbered_affiliation_pdf(tmp_path):
+    # EVAL-002 live finding: ALBERT's real PDF keys each author to an
+    # institution with a superscript digit ("Zhenzhong Lan1, Mingda Chen2")
+    # and then lists the institutions themselves on their own line the same
+    # way ("1Google Research  2Toyota Technological Institute at Chicago").
+    # _NOISE_LINE_RE's institution-keyword check only matches at the START
+    # of a line, but a digit sits there instead — the whole affiliation
+    # line then survived as one bogus "author".
+    path = tmp_path / "numbered_affiliation.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 50
+    for text, size, step in [
+        ("A Paper With Numbered Affiliations", 18, 30),
+        ("Zhenzhong Lan1, Mingda Chen2", 11, 15),
+        ("1Google Research  2Toyota Technological Institute at Chicago", 10, 20),
+        ("Abstract", 13, 20),
+        ("This paper has numbered affiliations.", 10, 30),
+    ]:
+        page.insert_text((72, y), text, fontsize=size)
+        y += step
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def test_excludes_numbered_affiliation_tokens_from_authors(numbered_affiliation_pdf):
+    result = parse_pdf(numbered_affiliation_pdf)
+    assert result.ok
+    assert result.authors == ["Zhenzhong Lan1", "Mingda Chen2"]
+
+
 def test_finds_sections(synthetic_pdf):
     result = parse_pdf(synthetic_pdf)
     assert {"abstract", "introduction", "method", "references"} <= result.sections.keys()

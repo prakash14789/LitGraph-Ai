@@ -173,6 +173,26 @@ async def test_write_claim_dedupes_same_paper_same_text():
         get_collection(settings.chroma_collection_entities).delete(ids=[f"entity_{node_id_1}"])
 
 
+async def test_write_claim_dedupes_same_paper_case_and_whitespace_difference():
+    # EVAL-002 live finding (RoBERTa reprocess): the same claim re-extracted
+    # with only a case/whitespace difference hashed to a different claim_id
+    # and got saved as a second node.
+    paper_id = f"GW-TEST-PAPER-{uuid.uuid4()}"
+    text = "Our model achieves 92 F1 on the test set."
+    text_variant = "  our model achieves 92 f1  on the test set.  "
+    try:
+        node_id_1 = await graph_writer.write_claim(paper_id, text, "RESULT", 0.9)
+        node_id_2 = await graph_writer.write_claim(paper_id, text_variant, "RESULT", 0.9)
+
+        assert node_id_1 == node_id_2
+        assert await _node_count("(c:Claim {source_paper_id: $id})", id=paper_id) == 1
+    finally:
+        driver = get_driver()
+        async with driver.session() as session:
+            await session.run("MATCH (c:Claim {source_paper_id: $id}) DETACH DELETE c", id=paper_id)
+        get_collection(settings.chroma_collection_entities).delete(ids=[f"entity_{node_id_1}"])
+
+
 async def test_write_authors_creates_author_nodes_and_authored_by_edges():
     paper_id = f"GW-TEST-PAPER-{uuid.uuid4()}"
     author_name = f"GW-TEST-AUTHOR-{uuid.uuid4()}"
