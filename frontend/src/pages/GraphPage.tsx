@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Download, Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -168,6 +168,27 @@ export function GraphPage() {
       .map((n) => n.id);
   }, [search, visibleNodes]);
 
+  // POLISH-007. Backend already sets Content-Disposition, but that header
+  // only drives a download for a direct browser navigation, not an
+  // axios-fetched blob — building the download link client-side instead.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const { data } = await litgraphApi.exportGraph(collectionId);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "litgraph-graph-export.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Failed to export graph.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const toggleType = (set: React.Dispatch<React.SetStateAction<Set<string>>>, value: string) => {
     set((prev) => {
       const next = new Set(prev);
@@ -224,7 +245,18 @@ export function GraphPage() {
           ))}
         </select>
 
-        <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-border bg-background p-1 shadow-sm">
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={handleExport}
+          disabled={exporting}
+        >
+          <Download className="mr-1.5 h-3.5 w-3.5" />
+          {exporting ? "Exporting…" : "Export"}
+        </Button>
+
+        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background p-1 shadow-sm">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => canvasRef.current?.zoomOut()} aria-label="Zoom out">
             <ZoomOut className="h-4 w-4" />
           </Button>

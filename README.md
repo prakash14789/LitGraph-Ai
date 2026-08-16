@@ -136,11 +136,9 @@ A question is answered by **both** a vector search over chunk/entity embeddings 
 
 ## Roadmap
 
-Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script, request-ID error handling + duplicate-upload guard, rate limiting (slowapi), one-click ArXiv import, dark mode, a self-audit faithfulness check on GraphRAG answers.
+Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script, request-ID error handling + duplicate-upload guard, rate limiting (slowapi), one-click ArXiv import, dark mode, a self-audit faithfulness check on GraphRAG answers, graph data export (JSON).
 
-Not yet built (see [`docs/05_FEATURE_TICKETS.md`](docs/05_FEATURE_TICKETS.md) for full specs):
-
-- Graph data export (GraphML/CSV)
+Every ticket in [`docs/05_FEATURE_TICKETS.md`](docs/05_FEATURE_TICKETS.md)'s Epic 8 (Polish) is now shipped — see that doc for what's scoped as future/production-only work beyond MVP (auth, GraphML/CSV export formats beyond JSON, etc).
 
 ## Docs
 

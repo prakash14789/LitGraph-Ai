@@ -193,3 +193,46 @@ async def test_search_finds_entity_by_text_and_respects_type_filter(test_client)
 async def test_search_unknown_type_returns_400(test_client):
     response = await test_client.get("/api/v1/graph/search", params={"q": "x", "type": "NotAType"})
     assert response.status_code == 400
+
+
+async def test_export_returns_full_graph_and_download_headers(test_client):
+    # POLISH-007. Same superset-check pattern as the whole-graph subgraph
+    # test above — other tests' fixtures legitimately coexist, so this only
+    # asserts the fixture is *included*, not that it's all that comes back.
+    # The one thing export must NOT do that /graph/subgraph does is cap at
+    # _MAX_FULL_GRAPH_NODES — not independently verifiable without seeding
+    # 150+ real nodes, so that's covered by unit-level reasoning (same
+    # helper, different limit argument) rather than a live test here.
+    tag = f"GA-TEST-{uuid.uuid4()}"
+    try:
+        rows = await _run(
+            "CREATE (p:Paper {paper_id: $paper_id, title: 'p'}) "
+            "CREATE (m:Method {canonical_name: $method}) "
+            "CREATE (p)-[:USES_METHOD {confidence: 0.9}]->(m) "
+            "RETURN elementId(p) AS p, elementId(m) AS m",
+            paper_id=f"{tag}-paper",
+            method=f"{tag}-method",
+        )
+        ids = rows[0]
+
+        response = await test_client.get("/api/v1/graph/export")
+        assert response.status_code == 200
+        assert (
+            response.headers["content-disposition"]
+            == 'attachment; filename="litgraph-graph-export.json"'
+        )
+        body = response.json()
+        node_ids = {n["id"] for n in body["nodes"]}
+        assert ids["p"] in node_ids
+        assert ids["m"] in node_ids
+        assert any(
+            e["source"] == ids["p"] and e["target"] == ids["m"] and e["rel_type"] == "USES_METHOD"
+            for e in body["edges"]
+        )
+    finally:
+        await _cleanup(tag)
+
+
+async def test_export_rejects_unsupported_format(test_client):
+    response = await test_client.get("/api/v1/graph/export", params={"format": "csv"})
+    assert response.status_code == 422  # Literal["json"] — FastAPI's own validation

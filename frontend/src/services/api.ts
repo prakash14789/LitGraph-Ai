@@ -108,6 +108,13 @@ export const litgraphApi = {
   getEntity: (id: string) => api.get<EntityDetailResponse>(`/graph/entity/${id}`),
   searchEntities: (q: string, type?: string) =>
     api.get<SearchResponse>("/graph/search", { params: { q, type } }),
+  // POLISH-007 — responseType "blob" (not the usual JSON) since the caller
+  // hands this straight to a download link, not a data structure it reads.
+  exportGraph: (collectionId?: string | null) =>
+    api.get<Blob>("/graph/export", {
+      params: { format: "json", collection_id: collectionId || undefined },
+      responseType: "blob",
+    }),
 };
 
 export default api;
