@@ -4,12 +4,13 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_db
+from src.api.rate_limit import limiter
 from src.api.schemas.ingest import JobStatusResponse, UploadResult
 from src.config import settings
 from src.models.extraction_job import JobStatus
@@ -34,7 +35,9 @@ def _validate_pdf(filename: str, content: bytes) -> None:
 
 
 @router.post("/ingest/upload", response_model=list[UploadResult])
+@limiter.limit("10/hour")  # §5.1: ingestion is expensive (LLM calls per paper)
 async def upload_papers(
+    request: Request,  # unused directly — slowapi's decorator requires this exact param name
     files: list[UploadFile] = File(...),
     collection_id: uuid.UUID | None = Form(None),
     db: AsyncSession = Depends(get_db),

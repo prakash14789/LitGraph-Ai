@@ -80,7 +80,15 @@ async def test_client(test_engine):
     from httpx import ASGITransport, AsyncClient
 
     from src.api.dependencies import get_db
+    from src.api.rate_limit import limiter
     from src.main import app
+
+    # POLISH-002: slowapi is backed by the real dev Redis instance (no
+    # isolated test instance, same gap noted for Neo4j/Chroma). Without this,
+    # tests that hit the same endpoint repeatedly (e.g. duplicate-upload
+    # tests) would eventually start seeing real 429s instead of the
+    # responses they're actually asserting on.
+    limiter.enabled = False
 
     async def _override_get_db():
         async with AsyncSession(bind=test_engine, expire_on_commit=False) as session:

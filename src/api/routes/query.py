@@ -25,11 +25,12 @@ import asyncio
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_db
+from src.api.rate_limit import limiter
 from src.api.schemas.query import (
     Citation,
     CompareQueryRequest,
@@ -61,33 +62,34 @@ router = APIRouter()
 
 
 @router.post("/query/compare", response_model=CompareQueryResponse)
+@limiter.limit("30/minute")  # §5.1: two LLM calls per request
 async def query_compare(
-    request: CompareQueryRequest, db: AsyncSession = Depends(get_db)
+    request: Request, body: CompareQueryRequest, db: AsyncSession = Depends(get_db)
 ) -> CompareQueryResponse:
     """Each pipeline gets its own AsyncSession — SQLAlchemy's AsyncSession
-    isn't safe for concurrent use from two tasks at once, and query_graphrag/
-    query_vanilla are called directly as plain async functions here (not
-    through FastAPI's routing), so a single Depends(get_db) session isn't
-    available or appropriate anyway. The `db` session here is only used
-    afterward, to persist the query_log row COMPARE-002's vote endpoint
-    attaches to."""
+    isn't safe for concurrent use from two tasks at once, and
+    _query_graphrag_impl/query_vanilla are called directly as plain async
+    functions here (not through FastAPI's routing), so a single
+    Depends(get_db) session isn't available or appropriate anyway. The `db`
+    session here is only used afterward, to persist the query_log row
+    COMPARE-002's vote endpoint attaches to."""
     start = time.monotonic()
     async with AsyncSessionLocal() as graphrag_db, AsyncSessionLocal() as vanilla_db:
         graphrag_result, vanilla_result = await asyncio.gather(
-            query_graphrag(
+            _query_graphrag_impl(
                 QueryRequest(
-                    query=request.query,
-                    top_k=request.top_k,
-                    hops=request.hops,
-                    collection_id=request.collection_id,
+                    query=body.query,
+                    top_k=body.top_k,
+                    hops=body.hops,
+                    collection_id=body.collection_id,
                 ),
                 graphrag_db,
             ),
             query_vanilla(
                 VanillaQueryRequest(
-                    query=request.query,
-                    top_k=request.vanilla_top_k,
-                    collection_id=request.collection_id,
+                    query=body.query,
+                    top_k=body.vanilla_top_k,
+                    collection_id=body.collection_id,
                 ),
                 vanilla_db,
             ),
@@ -101,7 +103,7 @@ async def query_compare(
     # the response (mattered enough to trip this file's own parallelism
     # timing test — see test_compare_runs_both_pipelines_in_parallel).
     log = QueryLog(
-        query_text=request.query,
+        query_text=body.query,
         graphrag_answer=graphrag_result.answer,
         vanilla_answer=vanilla_result.answer,
         latency_ms=total_latency_ms,
@@ -132,17 +134,26 @@ async def vote_compare(
 
 
 @router.post("/query", response_model=QueryResponse)
+@limiter.limit("60/minute")  # §5.1: each query = LLM API call
 async def query_graphrag(
-    request: QueryRequest, db: AsyncSession = Depends(get_db)
+    request: Request, body: QueryRequest, db: AsyncSession = Depends(get_db)
 ) -> QueryResponse:
+    return await _query_graphrag_impl(body, db)
+
+
+async def _query_graphrag_impl(body: QueryRequest, db: AsyncSession) -> QueryResponse:
+    """The actual /query implementation, split out from the rate-limited
+    route above so query_compare can call it directly without re-triggering
+    /query's own decorator (and without needing a Starlette Request to pass
+    it — query_compare only has body models to hand it)."""
     start = time.monotonic()
 
-    collection_id = str(request.collection_id) if request.collection_id else None
-    seeds = retrieve_seeds(request.query, collection_id=collection_id)
-    subgraph = await retrieve_subgraph(seeds, hops=request.hops, collection_id=collection_id)
-    ranked = score_subgraph(subgraph, seeds, top_k=request.top_k)
+    collection_id = str(body.collection_id) if body.collection_id else None
+    seeds = retrieve_seeds(body.query, collection_id=collection_id)
+    subgraph = await retrieve_subgraph(seeds, hops=body.hops, collection_id=collection_id)
+    ranked = score_subgraph(subgraph, seeds, top_k=body.top_k)
     context = build_context(ranked, seeds)
-    answer = await asyncio.to_thread(generate_graphrag_answer, request.query, context)
+    answer = await asyncio.to_thread(generate_graphrag_answer, body.query, context)
     citations = await _build_citations(db, ranked, seeds)
 
     return QueryResponse(
