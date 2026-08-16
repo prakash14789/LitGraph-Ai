@@ -11,8 +11,22 @@ import {
   NODE_STYLE_BY_LABEL,
   toElements,
 } from "@/lib/graphElements";
+import { isDarkMode, onThemeChange } from "@/lib/theme";
 import { litgraphApi } from "@/services/api";
 import type { SubgraphEdge } from "@/types";
+
+// POLISH-003: entity/relationship fill colors (NODE_STYLE_BY_LABEL etc.)
+// are saturated brand colors that already read fine on both backgrounds —
+// only this "chrome" (label text, selection/highlight lines) was originally
+// picked assuming a light canvas and goes near-invisible on a dark one.
+// Cytoscape draws to <canvas>, so these can't be CSS tokens — isDarkMode()
+// is re-read on every call, and cy.style().update() (below) forces
+// Cytoscape to re-invoke these once the toggle fires.
+function chromeColors() {
+  return isDarkMode()
+    ? { label: "#cbd5e1", selection: "#f8fafc", edgeLabel: "#94a3b8" }
+    : { label: "#1f2937", selection: "#111827", edgeLabel: "#64748b" };
+}
 
 export type { CanvasNode } from "@/lib/graphElements";
 
@@ -120,7 +134,7 @@ export const GraphCanvas = forwardRef<
             height: "data(size)",
             label: "data(displayLabel)",
             "font-size": 9,
-            color: "#1f2937",
+            color: () => chromeColors().label,
             "text-valign": "bottom",
             "text-margin-y": 4,
             "text-wrap": "ellipsis",
@@ -131,7 +145,7 @@ export const GraphCanvas = forwardRef<
         },
         {
           selector: "node:selected",
-          style: { "border-width": 3, "border-color": "#111827" },
+          style: { "border-width": 3, "border-color": () => chromeColors().selection },
         },
         {
           selector: "edge",
@@ -150,12 +164,16 @@ export const GraphCanvas = forwardRef<
             label: "data(edgeLabel)",
             "font-size": 8,
             "text-rotation": "autorotate",
-            color: "#64748b",
+            color: () => chromeColors().edgeLabel,
           },
         },
         {
           selector: ".highlighted",
-          style: { "line-color": "#111827", "target-arrow-color": "#111827", width: 3 },
+          style: {
+            "line-color": () => chromeColors().selection,
+            "target-arrow-color": () => chromeColors().selection,
+            width: 3,
+          },
         },
         {
           // GRAPH-003 text search — a static "pulse-on" look toggled by JS
@@ -251,7 +269,14 @@ export const GraphCanvas = forwardRef<
     const resizeObserver = new ResizeObserver(() => cy.resize());
     resizeObserver.observe(containerRef.current);
 
+    // POLISH-003: chromeColors() reads the live theme on every call, but
+    // Cytoscape only re-invokes style functions on its own triggers — force
+    // one so an already-mounted canvas repaints the moment the toggle fires,
+    // instead of only picking up the new colors on the next data change.
+    const unsubscribeTheme = onThemeChange(() => cy.style().update());
+
     return () => {
+      unsubscribeTheme();
       resizeObserver.disconnect();
       cy.destroy();
       cyRef.current = null;

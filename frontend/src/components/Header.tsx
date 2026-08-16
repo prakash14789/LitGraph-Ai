@@ -1,12 +1,11 @@
-import { Moon, Network } from "lucide-react";
+import { Moon, Network, Sun } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
+import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 
-// 04_FRONTEND_SPECIFICATION.md §4.1 — sticky header, 4 nav tabs. UserMenu
-// (dark mode toggle, per §5) lands with POLISH-003, not this ticket —
-// FE-001's own acceptance criteria only needs the 4 tabs navigating.
+// 04_FRONTEND_SPECIFICATION.md §4.1 — sticky header, 4 nav tabs.
 const TABS = [
   { to: "/chat", label: "Chat" },
   { to: "/graph", label: "Graph" },
@@ -15,6 +14,8 @@ const TABS = [
 ] as const;
 
 export function Header() {
+  const { theme, toggleTheme } = useTheme();
+
   return (
     <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-background/80 px-4 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="flex items-center gap-2.5 font-semibold tracking-tight text-foreground">
@@ -43,11 +44,13 @@ export function Header() {
         ))}
       </nav>
 
-      {/* UserMenu placeholder — real dark mode toggle (persisted, Cytoscape-
-          aware) lands with POLISH-003. Disabled for now so it's not a
-          non-functional-looking live control. */}
-      <Button variant="ghost" size="icon" disabled aria-label="Dark mode (coming soon)">
-        <Moon className="h-4 w-4" />
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={toggleTheme}
+        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      >
+        {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       </Button>
     </header>
   );

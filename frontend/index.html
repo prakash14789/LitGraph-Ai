@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LitGraph</title>
+    <!-- POLISH-003: applied synchronously, before first paint, so there's no
+         flash of the wrong theme while React mounts. Mirrors the same
+         "stored preference, else system preference" logic as
+         src/lib/theme.ts's resolveInitialTheme — duplicated here because an
+         inline script can't import from the app bundle. -->
+    <script>
+      (function () {
+        var stored = localStorage.getItem("litgraph-theme");
+        var dark = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+        if (dark) document.documentElement.classList.add("dark");
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
