@@ -135,7 +135,7 @@ async def test_delete_paper_preserves_shared_entity_and_removes_orphan(
 
     driver = get_driver()
     async with driver.session() as session:
-        await session.run(
+        result = await session.run(
             """
             CREATE (pa:Paper {paper_id: $a})
             CREATE (pb:Paper {paper_id: $b})
@@ -144,10 +144,29 @@ async def test_delete_paper_preserves_shared_entity_and_removes_orphan(
             CREATE (pa)-[:USES_METHOD {confidence: 0.9}]->(m)
             CREATE (pb)-[:USES_METHOD {confidence: 0.8}]->(m)
             CREATE (pa)-[:HAS_CLAIM]->(c)
+            RETURN elementId(m) AS method_id
             """,
             a=str(paper_a_id),
             b=str(paper_b_id),
         )
+        method_node_id = (await result.single())["method_id"]
+
+    # POLISH-006-adjacent fix (ghost source_papers): a hand-built row, same
+    # shape _upsert_chroma_entity writes for real — both papers referenced
+    # this shared Method before paper_a is deleted below.
+    entities = get_collection(settings.chroma_collection_entities)
+    entities.upsert(
+        ids=[f"entity_{method_node_id}"],
+        embeddings=[[0.0] * settings.embedding_dimension],
+        documents=["INGEST-007-TEST-METHOD"],
+        metadatas=[
+            {
+                "entity_type": "Method",
+                "canonical_name": "INGEST-007-TEST-METHOD",
+                "source_papers": f"{paper_a_id},{paper_b_id}",
+            }
+        ],
+    )
 
     try:
         response = await test_client.delete(f"/api/v1/papers/{paper_a_id}")
@@ -176,6 +195,13 @@ async def test_delete_paper_preserves_shared_entity_and_removes_orphan(
                 id=str(paper_b_id),
             )
             assert (await result.single())["name"] == "INGEST-007-TEST-METHOD"
+
+        # the ghost-citation fix: the surviving entity's Chroma row must
+        # drop paper_a from source_papers, not just keep accumulating it.
+        surviving = entities.get(ids=[f"entity_{method_node_id}"])
+        source_papers = set(surviving["metadatas"][0]["source_papers"].split(","))
+        assert str(paper_a_id) not in source_papers
+        assert str(paper_b_id) in source_papers
     finally:
         async with driver.session() as session:
             await session.run(
@@ -185,5 +211,6 @@ async def test_delete_paper_preserves_shared_entity_and_removes_orphan(
                 "DETACH DELETE n",
                 ids=[str(paper_a_id), str(paper_b_id)],
             )
+        entities.delete(ids=[f"entity_{method_node_id}"])
         await _cleanup_paper(test_engine, paper_a_id)
         await _cleanup_paper(test_engine, paper_b_id)

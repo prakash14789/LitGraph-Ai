@@ -33,6 +33,14 @@ RETURN DISTINCT elementId(n) AS id, labels(n) AS labels,
 # still connected to something else (another paper, or each other) survive —
 # matches the ticket's own suggested Cypher shape exactly. Returns the
 # elementIds of whatever got deleted, so the caller can also drop their
+# Chroma rows, AND the elementIds of shared neighbors that survived — a
+# survivor's Chroma entity row still carries this paper_id in its
+# source_papers metadata (graph_writer._upsert_chroma_entity only ever
+# adds to that set, never removes), which without this became a permanent
+# "ghost citation": confirmed live, GET /query kept citing two papers
+# deleted earlier this session because their ids were still sitting in a
+# shared entity's source_papers long after both the Postgres row and this
+# Neo4j node were gone.
 # matching `entity_{id}` records from Chroma's entity_embeddings collection.
 DELETE_PAPER_CASCADE = """
 MATCH (p:Paper {paper_id: $paper_id})
@@ -42,10 +50,10 @@ WITH p, collect(DISTINCT neighbor) AS neighbors
 DETACH DELETE p
 WITH neighbors
 UNWIND neighbors AS n
-WITH n WHERE NOT (n)--()
-WITH n, elementId(n) AS id
-DETACH DELETE n
-RETURN collect(id) AS orphaned_ids
+WITH n, elementId(n) AS id, NOT (n)--() AS is_orphan
+FOREACH (_ IN CASE WHEN is_orphan THEN [1] ELSE [] END | DETACH DELETE n)
+RETURN collect(CASE WHEN is_orphan THEN id END) AS orphaned_ids,
+       collect(CASE WHEN NOT is_orphan THEN id END) AS surviving_ids
 """
 
 # GRAPH-001 — GET /graph/overview's two stat queries.
@@ -93,13 +101,21 @@ RETURN type(r) AS rel_type, startNode(r) = n AS from_self,
 # papers get ingested — one real paper's worth (79 entities) already
 # tipped an unrelated oversized section over Groq's per-request token
 # cap. A cap trades "some cross-paper links to older/rarer entities might
-# be missed" for "request size stays bounded regardless of corpus size" —
-# reasonable for an MVP-scale eval corpus, not a real precision loss at
-# the scale this graph currently operates at.
+# be missed" for "request size stays bounded regardless of corpus size".
+#
+# Raised 100 -> 500 (EVAL-002 follow-up): live count already reached 210
+# Method+Dataset nodes, meaning entity resolution and cross-paper linking
+# had been working off an arbitrary ~48% slice of the graph for a while —
+# not just "some entities missed", most of the graph was invisible to both.
+# 500 (not unbounded) keeps the original per-request token-cap concern in
+# mind — pipeline.py's own cross-paper candidate list is now also trimmed
+# per-paper (this paper's own entity names excluded before the cross-paper
+# LLM call, see pipeline.py's all_own_names/cross_candidate_tuples), which
+# offsets some of this increase.
 EXISTING_NAMED_ENTITIES = """
 MATCH (n)
 WHERE n:Method OR n:Dataset
 RETURN elementId(n) AS id, labels(n)[0] AS entity_type, n.canonical_name AS canonical_name,
        n.description AS description, n.aliases AS aliases, n.embedding AS embedding
-LIMIT 100
+LIMIT 500
 """

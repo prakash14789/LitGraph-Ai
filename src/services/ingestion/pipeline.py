@@ -120,6 +120,20 @@ _EMAIL_RE = re.compile(r"[\w.]+@[\w.]+\.\w+")
 # target actually named in its evidence scores 100).
 _INTRODUCES_GROUNDING_THRESHOLD = 70.0
 
+# EVAL-002 follow-up live finding: a paper's "references"/"acknowledgments"
+# section text was being fed to entity/relation extraction like any other
+# section — a bibliography entry naming another paper ("Electra:
+# Pre-training text encoders...") reads enough like a real sentence that
+# the model occasionally extracted an INTRODUCES/USES_METHOD relation from
+# it, with the target's name trivially "grounded" since it's literally the
+# cited title (confirmed live: T5's paper got INTRODUCES->"Electra" with
+# evidence_text that was just its reference-list entry for Electra — no
+# structural grounding check catches this, since the name genuinely does
+# appear in that text). These sections never contain genuine claims about
+# the paper's own contribution, so they're dropped before extraction
+# entirely rather than truncated-and-kept like real content sections.
+_NON_CONTENT_SECTIONS = {"references", "acknowledgments", "acknowledgements"}
+
 _MIN_CLAIM_WORDS = 5
 _CLAIM_TITLE_MATCH_THRESHOLD = 85.0
 _VERB_HINT_RE = re.compile(
@@ -227,6 +241,26 @@ _MAX_SECTION_CHARS = 10_000  # ~2500 tokens at ~4 chars/token — EVAL-001 live
 # likely mis-parsed (heading detection swallowing following sections)
 # than genuinely one coherent section, so truncating is a safe tradeoff,
 # not just an ugly workaround.
+
+
+def _drop_non_content_sections(sections: dict[str, str]) -> dict[str, str]:
+    # pdf_parser._split_sections lowercases every header it detects, so a
+    # plain membership check is enough — no need to re-normalize case here.
+    return {name: text for name, text in sections.items() if name not in _NON_CONTENT_SECTIONS}
+
+
+def _exclude_own_name_candidates(
+    candidate_tuples: list[tuple[str, str]], all_own_names: set[str]
+) -> list[tuple[str, str]]:
+    """Drops any cross-paper candidate whose normalized name is one of this
+    paper's own extracted entity names — see _write_graph's own comment for
+    the live self-loop bug this closes. `all_own_names` must already be
+    _norm()-ed."""
+    return [
+        (name, entity_type)
+        for name, entity_type in candidate_tuples
+        if _norm(name) not in all_own_names
+    ]
 
 
 def _truncate_sections(sections: dict[str, str]) -> dict[str, str]:
@@ -346,7 +380,7 @@ def _drop_title_and_trivial_claims(
 
 
 async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) -> None:
-    sections: dict[str, str] = _truncate_sections(paper.sections or {})
+    sections: dict[str, str] = _truncate_sections(_drop_non_content_sections(paper.sections or {}))
     sections = _strip_title_from_preamble(sections, paper.title)
 
     job.status = JobStatus.EXTRACTING_ENTITIES
@@ -365,13 +399,27 @@ async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) 
     await session.commit()
     candidates = await fetch_candidate_entities()
     candidate_tuples = [(c.name, c.entity_type) for c in candidates]
+    # Live finding: a candidate that happens to share this paper's OWN
+    # entity's name (its own past self on a reprocess run, or simply two
+    # papers naming the same shared concept identically) was still being
+    # offered to the cross-paper pass as if it were a genuinely different
+    # paper's entity. Since entity resolution then merges this paper's own
+    # mention into that same pre-existing node, the "cross-paper" relation
+    # ended up as a literal self-loop (X EXTENDS X) — confirmed live, 8
+    # instances (WebText, BERT, Transformer, ...). Computed across every
+    # section, not just the current one, since a name mentioned in section
+    # B is still this paper's own even while extracting section A.
+    all_own_names = {
+        _norm(m.name) for extraction in extractions.values() for m in extraction.methods
+    } | {_norm(d.name) for extraction in extractions.values() for d in extraction.datasets}
+    cross_candidate_tuples = _exclude_own_name_candidates(candidate_tuples, all_own_names)
     relations: dict[str, list[ExtractedRelation]] = {}
     for name, text in sections.items():
         own_names = [m.name for m in extractions[name].methods] + [
             d.name for d in extractions[name].datasets
         ]
         intra = extract_intra_paper_relations(name, text, own_names)
-        cross = extract_cross_paper_relations(name, text, own_names, candidate_tuples)
+        cross = extract_cross_paper_relations(name, text, own_names, cross_candidate_tuples)
         relations[name] = intra + cross
 
     job.status = JobStatus.RESOLVING_ENTITIES

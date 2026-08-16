@@ -236,6 +236,7 @@ export function GraphPage() {
           onChange={(e) => setCollectionId(e.target.value || null)}
           className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           aria-label="Scope graph to a collection"
+          title="A shared entity (e.g. a method both this collection's papers and another collection's papers use) can still appear here if it has a connection into this collection — collections group papers, they don't fully isolate their graph data."
         >
           <option value="">All papers</option>
           {collections.map((c) => (

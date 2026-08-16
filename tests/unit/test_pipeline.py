@@ -12,7 +12,9 @@ from src.services.ingestion.pipeline import (
     _TARGET_TYPE_BY_REL,
     _dedupe_claims,
     _drop_conflicting_trained_on,
+    _drop_non_content_sections,
     _drop_title_and_trivial_claims,
+    _exclude_own_name_candidates,
     _is_introduces_grounded,
     _strip_title_from_preamble,
     _truncate_sections,
@@ -31,6 +33,45 @@ def test_truncate_sections_caps_oversized_sections():
     assert len(result["model"]) == _MAX_SECTION_CHARS + len("\n[truncated]")
     assert result["model"].startswith("x" * _MAX_SECTION_CHARS)
     assert result["model"].endswith("[truncated]")
+
+
+# --- EVAL-002 follow-up: references/acknowledgments never fed to extraction
+
+
+def test_drop_non_content_sections_removes_references_and_acknowledgments():
+    sections = {
+        "abstract": "we propose a new method",
+        "references": "Kevin Clark et al. Electra: Pre-training text encoders. 2020.",
+        "acknowledgments": "We thank our colleagues for helpful discussions.",
+        "acknowledgements": "We thank our colleagues for helpful discussions.",
+    }
+    result = _drop_non_content_sections(sections)
+    assert result == {"abstract": "we propose a new method"}
+
+
+def test_drop_non_content_sections_leaves_other_sections_untouched():
+    sections = {"abstract": "x", "introduction": "y", "conclusion": "z"}
+    assert _drop_non_content_sections(sections) == sections
+
+
+# --- EVAL-002 follow-up: cross-paper candidates never include this paper's
+# --- own entities (closes the live X-EXTENDS-X self-loop bug)
+
+
+def test_exclude_own_name_candidates_drops_matching_names():
+    candidates = [("WebText", "Dataset"), ("BERT", "Method"), ("GPT-2", "Method")]
+    result = _exclude_own_name_candidates(candidates, {"webtext", "bert"})
+    assert result == [("GPT-2", "Method")]
+
+
+def test_exclude_own_name_candidates_keeps_all_when_no_overlap():
+    candidates = [("Transformer", "Method"), ("SQuAD", "Dataset")]
+    assert _exclude_own_name_candidates(candidates, {"electra"}) == candidates
+
+
+def test_exclude_own_name_candidates_is_case_and_whitespace_insensitive():
+    candidates = [("  WebText  ", "Dataset")]
+    assert _exclude_own_name_candidates(candidates, {"webtext"}) == []
 
 
 # --- EVAL-002 fix 1: email-block noise stripped from preamble -----------

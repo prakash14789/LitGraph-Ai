@@ -50,15 +50,18 @@ async def delete_paper(db: AsyncSession, paper_id: UUID) -> Paper | None:
         result = await session.run(DELETE_PAPER_CASCADE, paper_id=str(paper_id))
         record = await result.single()
     orphaned_ids: list[str] = record["orphaned_ids"] if record else []
+    surviving_ids: list[str] = record["surviving_ids"] if record else []
 
     chunks = get_collection(settings.chroma_collection_chunks)
     existing = chunks.get(where={"paper_id": str(paper_id)})
     if existing["ids"]:
         chunks.delete(ids=existing["ids"])
 
+    entities = get_collection(settings.chroma_collection_entities)
     if orphaned_ids:
-        entities = get_collection(settings.chroma_collection_entities)
         entities.delete(ids=[f"entity_{node_id}" for node_id in orphaned_ids])
+    if surviving_ids:
+        _remove_paper_from_source_papers(entities, surviving_ids, str(paper_id))
 
     await paper_repository.delete(db, paper_id)
 
@@ -67,6 +70,27 @@ async def delete_paper(db: AsyncSession, paper_id: UUID) -> Paper | None:
         paper_id=str(paper_id),
         title=paper.title,
         orphaned_entities=len(orphaned_ids),
+        surviving_entities_updated=len(surviving_ids),
         chunks_removed=len(existing["ids"]),
     )
     return paper
+
+
+def _remove_paper_from_source_papers(entities, node_ids: list[str], paper_id: str) -> None:
+    """A shared entity's source_papers metadata (graph_writer.py's
+    _upsert_chroma_entity) only ever grows — this is the other half of that
+    write, run once here at delete time instead of on every write, since
+    "which papers still reference this entity" only changes on deletion.
+    Missing/never-embedded ids (e.g. Author, never in _EMBEDDED_LABELS) are
+    silently skipped by Chroma's own .get() — nothing to update for those."""
+    chroma_ids = [f"entity_{node_id}" for node_id in node_ids]
+    existing = entities.get(ids=chroma_ids)
+    if not existing["ids"]:
+        return
+    updated_metadatas = []
+    for meta in existing["metadatas"]:
+        source_papers = set((meta.get("source_papers") or "").split(","))
+        source_papers.discard("")
+        source_papers.discard(paper_id)
+        updated_metadatas.append({**meta, "source_papers": ",".join(sorted(source_papers))})
+    entities.update(ids=existing["ids"], metadatas=updated_metadatas)

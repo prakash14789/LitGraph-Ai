@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderPlus, Layers, MessageSquarePlus, Sparkles } from "lucide-react";
+import { FolderPlus, Info, Layers, MessageSquarePlus, Sparkles } from "lucide-react";
 
 import { folderColor } from "@/lib/folderColor";
 import { cn } from "@/lib/utils";
@@ -53,8 +53,16 @@ export function ChatSidebar() {
       </div>
 
       <div className="flex items-center justify-between px-3 pb-1.5 pt-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Folders
+          {/* Native title attr, not a custom tooltip component — one info
+              icon doesn't justify adding a dependency for it. See README's
+              "Collections are organizational, not a retrieval boundary"
+              key-decision bullet for the full explanation. */}
+          <Info
+            className="h-3 w-3 cursor-help opacity-60"
+            title="Folders organize papers, but don't fully isolate them — an entity shared between papers in different folders (e.g. both mention the same method) can still surface across folders. Chunk-level text search is folder-scoped either way."
+          />
         </span>
         <button
           onClick={handleNewFolder}
