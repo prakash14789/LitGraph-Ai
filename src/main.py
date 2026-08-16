@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.middleware import install_error_handling
 from src.api.router import api_router
 from src.api.routes import health
 from src.config import settings
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+install_error_handling(app)
 
 # /health is unprefixed (infra/monitoring convention) — everything else lives under /api/v1
 app.include_router(health.router)

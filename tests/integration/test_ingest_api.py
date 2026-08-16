@@ -110,17 +110,55 @@ async def test_status_endpoint_404_for_unknown_job(test_client):
     assert response.status_code == 404
 
 
+async def test_upload_same_content_twice_returns_duplicate(test_client, test_engine):
+    # POLISH-001 live finding: the same PDF re-uploaded (different filename,
+    # identical bytes) used to silently create a second Paper row and queue
+    # a second full extraction run.
+    content = _pdf_bytes()
+    first = await test_client.post(
+        "/api/v1/ingest/upload",
+        files=[("files", ("original-name.pdf", content, "application/pdf"))],
+    )
+    paper_id = uuid.UUID(first.json()[0]["paper_id"])
+
+    try:
+        assert first.json()[0]["status"] == "queued"
+
+        second = await test_client.post(
+            "/api/v1/ingest/upload",
+            files=[("files", ("a-completely-different-name.pdf", content, "application/pdf"))],
+        )
+        assert second.status_code == 200
+        body = second.json()[0]
+        assert body["status"] == "duplicate"
+        assert body["paper_id"] == str(paper_id)
+        assert body["job_id"] is None  # no second job was queued
+
+        async with AsyncSession(bind=test_engine) as session:
+            result = await session.execute(select(Paper).where(Paper.content_hash.isnot(None)))
+            matching = [p for p in result.scalars().all() if p.id == paper_id]
+            assert len(matching) == 1  # exactly one Paper row for this content, not two
+    finally:
+        await _cleanup_paper(test_engine, paper_id)
+
+
 async def test_atomicity_failed_job_insert_rolls_back_paper(test_client, test_engine, monkeypatch):
     async def _boom(*args, **kwargs):
         raise RuntimeError("simulated ExtractionJob insert failure")
 
     monkeypatch.setattr(extraction_job_repository, "create", _boom)
 
-    with pytest.raises(RuntimeError, match="simulated"):
-        await test_client.post(
-            "/api/v1/ingest/upload",
-            files=[("files", ("atomicity-test.pdf", _pdf_bytes(), "application/pdf"))],
-        )
+    # POLISH-001's catch-all handler (src/api/middleware.py) now converts
+    # this into a clean 500 instead of letting the raw exception reach the
+    # caller — the atomicity guarantee this test actually checks (the Paper
+    # row rolling back) is unaffected either way, since that rollback
+    # happens inside the route's own try/except, before the exception ever
+    # reaches the middleware.
+    response = await test_client.post(
+        "/api/v1/ingest/upload",
+        files=[("files", ("atomicity-test.pdf", _pdf_bytes(), "application/pdf"))],
+    )
+    assert response.status_code == 500
 
     async with AsyncSession(bind=test_engine) as session:
         result = await session.execute(select(Paper).where(Paper.title == "atomicity-test"))

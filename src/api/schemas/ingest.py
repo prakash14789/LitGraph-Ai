@@ -7,11 +7,13 @@ from pydantic import BaseModel
 
 
 class UploadResult(BaseModel):
-    """One per uploaded file — either queued (job dispatched) or rejected
-    (validation failed, nothing was created)."""
+    """One per uploaded file: "queued" (job dispatched), "rejected"
+    (validation failed, nothing was created), or "duplicate" (POLISH-001 —
+    the exact same PDF content is already ingested as paper_id; nothing new
+    was created, no job was queued)."""
 
     filename: str
-    status: str  # "queued" | "rejected"
+    status: str  # "queued" | "rejected" | "duplicate"
     paper_id: uuid.UUID | None = None
     job_id: uuid.UUID | None = None
     error: str | None = None

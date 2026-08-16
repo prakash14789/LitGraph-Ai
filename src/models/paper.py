@@ -28,6 +28,17 @@ class Paper(Base):
     doi: Mapped[str | None] = mapped_column(Text, unique=True)
     abstract: Mapped[str | None] = mapped_column(Text)
     pdf_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # POLISH-001: sha256 of the raw PDF bytes at upload time. Nullable (rows
+    # from before this column existed have none) but unique where set — the
+    # real live problem this closes: the exact same PDF re-uploaded (a
+    # second manual upload, a re-run seed script, two people uploading the
+    # same paper) used to silently create a second Paper row with a fresh
+    # UUID and re-run the entire extraction pipeline from scratch, doubling
+    # the graph's node count for that paper. Checked explicitly in
+    # ingest.py before insert (a clear "already ingested" response) with
+    # this column's own unique constraint as a second line of defense
+    # against a genuine race between two concurrent uploads of the same file.
+    content_hash: Mapped[str | None] = mapped_column(Text, unique=True)
     raw_text: Mapped[str | None] = mapped_column(Text)
     sections: Mapped[dict | None] = mapped_column(JSONB)  # {"introduction": "...", "method": "..."}
     ingestion_status: Mapped[IngestionStatus] = mapped_column(

@@ -1,16 +1,19 @@
 """POST /ingest/upload, GET /ingest/status/{job_id}."""
 
+import hashlib
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_db
 from src.api.schemas.ingest import JobStatusResponse, UploadResult
 from src.config import settings
 from src.models.extraction_job import JobStatus
-from src.models.paper import IngestionStatus
+from src.models.paper import IngestionStatus, Paper
 from src.repositories import extraction_job_repository, paper_repository
 from src.tasks.ingest_task import process_paper
 
@@ -56,6 +59,23 @@ async def upload_papers(
             results.append(UploadResult(filename=filename, status="rejected", error=str(exc)))
             continue
 
+        # POLISH-001: the exact same PDF re-uploaded (a second manual
+        # upload, a re-run seed script, two people uploading the same
+        # paper) used to silently create a second Paper row and re-run the
+        # whole extraction pipeline from scratch. Checked before writing
+        # anything to disk or DB — content_hash's own unique constraint
+        # (see src/models/paper.py) still catches a genuine race between
+        # two concurrent uploads of the same file that both pass this
+        # check before either commits.
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing = await db.execute(select(Paper).where(Paper.content_hash == content_hash))
+        existing_paper = existing.scalar_one_or_none()
+        if existing_paper is not None:
+            results.append(
+                UploadResult(filename=filename, status="duplicate", paper_id=existing_paper.id)
+            )
+            continue
+
         paper_id = uuid.uuid4()
         dest_path = upload_dir / f"{paper_id}.pdf"  # UUID name — never the user-provided filename
         dest_path.write_bytes(content)
@@ -74,6 +94,7 @@ async def upload_papers(
                 title=Path(filename).stem,
                 authors=[],
                 pdf_path=str(dest_path),
+                content_hash=content_hash,
                 collection_id=collection_id,
                 ingestion_status=IngestionStatus.PENDING,
             )
@@ -81,6 +102,23 @@ async def upload_papers(
                 db, paper_id=paper.id, status=JobStatus.QUEUED
             )
             await db.commit()
+        except IntegrityError:
+            # The race the pre-check above can't fully close: two uploads
+            # of the same file committing concurrently. Whichever loses the
+            # DB-level unique constraint reports "duplicate" instead of a
+            # raw 500 — the winner's row is the real one either way.
+            await db.rollback()
+            dest_path.unlink(missing_ok=True)
+            existing = await db.execute(select(Paper).where(Paper.content_hash == content_hash))
+            existing_paper = existing.scalar_one_or_none()
+            results.append(
+                UploadResult(
+                    filename=filename,
+                    status="duplicate",
+                    paper_id=existing_paper.id if existing_paper else None,
+                )
+            )
+            continue
         except Exception:
             await db.rollback()
             raise
