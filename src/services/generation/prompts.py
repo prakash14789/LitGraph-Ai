@@ -9,9 +9,9 @@ You may recognize this paper from your training data. Ignore anything you recall
 Extract exactly four kinds of entities, only when they are actually described or discussed in the given text — never invent anything not present in the text:
 
 - METHODS: any named model, algorithm, or technique — the paper's own proposal, or an existing one it discusses, compares against, or builds on. "category" is a short label such as "proposed", "baseline", "prior-work", or "architecture-component".
-- DATASETS: any named dataset or benchmark that is used or discussed. "domain" is a short label such as "NLP", "vision", "speech", "tabular".
+- DATASETS: any named, specific dataset or benchmark that has a proper name (e.g. "SQuAD", "GLUE", "ImageNet"). Do NOT extract generic task categories or task types as datasets (e.g. "translation", "question-answering", "cloze tasks", "arithmetic" are TASK TYPES, not datasets — skip them entirely unless the paper names a specific benchmark for that task). "domain" is a short label such as "NLP", "vision", "speech", "tabular".
 - METRICS: any named evaluation metric reported with a value (e.g. "F1: 92.3"). Link it to the method and dataset it was measured on when the text states them; use null for either if the text doesn't say.
-- CLAIMS: a sentence-level assertion the paper makes, classified as exactly one of:
+- CLAIMS: a complete, verifiable assertion made BY the authors about their own work's results, methods, or contributions. Titles, section headers, and standalone noun phrases are NOT claims — skip them. Classify each as exactly one of:
   - RESULT: a reported finding or outcome ("Our model achieves...")
   - HYPOTHESIS: a stated expectation not yet a finding ("We expect that...")
   - LIMITATION: an acknowledged weakness or constraint ("A drawback of this approach is...")
@@ -22,6 +22,8 @@ For every extracted item, include a confidence score from 0.0 to 1.0 reflecting 
 A survey-style section may mention many methods only in passing, without introducing them in detail — extract those too (category "prior-work" or similar), just with a lower confidence than a method the section actually describes.
 
 If the section mentions no entities of a kind, return an empty list for it — do not fabricate examples to fill out the schema.
+
+Do not extract an entity name that looks like it merged with a nearby symbol or equation fragment (e.g. a stray single capital letter prefix inconsistent with normal naming, like "JXLNet" instead of "XLNet"). If unsure whether a name is genuine, skip it.
 
 Respond with ONLY a single JSON object — no markdown code fences, no prose before or after — matching exactly this shape:
 {
@@ -50,12 +52,16 @@ RELATION_EXTRACTION_INTRA_PROMPT = """You are an expert research paper analyst e
 
 You may recognize this paper from your training data. Ignore anything you recall about it — extract ONLY from the literal text given to you below.
 
-You are given the section text AND a list of entities already extracted from this same section (their exact names — use these exact names as "target", do not paraphrase them). Find relationships of exactly these 4 types between the paper and those entities:
+You are given the section text AND a list of entities already extracted from this same section (their exact names — use these exact names as "target", do not paraphrase them). Find relationships of exactly these 6 types between the paper and those entities:
 
 - USES_METHOD: the paper uses/applies a method (its own or an existing one) as part of its approach. Do NOT use this for a method the paper explicitly contrasts itself with ("unlike X", "in contrast to Y") — that's not a usage relationship, leave it out entirely rather than force it here.
 - EVALUATES_ON: the paper reports a metric value on a dataset. "target" MUST be the dataset name, never a method name — this relationship is always paper→dataset. Include "metric" (metric name), "value" (reported value), and "method" (which method achieved it, if the text says) — use null for any the text doesn't clearly state.
-- INTRODUCES: the paper is the origin of this method — it's presenting it as new/proposed here, not just using an existing one.
+- TRAINED_ON: the paper PRETRAINS its model from scratch on this dataset/corpus (e.g. "pretrained on Wikipedia and BookCorpus", "pretraining data includes Common Crawl"). Do NOT use this for fine-tuning or downstream-task data, even if the paper's wording says "trained/fine-tuned on X" — if X is a benchmark/task dataset that the model is fine-tuned and evaluated on, use EVALUATES_ON instead. A dataset should essentially never get both TRAINED_ON and EVALUATES_ON for the same paper unless the text genuinely describes it being used both ways (rare — look for clear separate evidence for each before allowing both).
+- INTRODUCES: the paper is the ORIGINAL SOURCE of this method/concept — it explicitly claims "we introduce/propose X" about ITS OWN novel contribution. Do NOT use this for a method the paper merely uses, extends, cites, or compares against — e.g. a paper using an existing model as a baseline does NOT introduce that baseline, and a paper that reimplements or compares against an existing training objective/technique does NOT introduce that objective/technique, even if the paper discusses it in detail. If the text is ambiguous about who originated it, leave INTRODUCES out rather than guess.
+- DISTILLED_FROM: the paper's own model is created via knowledge distillation from an existing larger "teacher" model (e.g. "DistilBERT is distilled from BERT"). "target" MUST be the teacher method's name. Do NOT use this for a method that merely inspired the architecture without an explicit distillation/teacher-student training process — that's EXTENDS (Pass B) territory, not this.
 - REPORTS_RESULT: the paper states a specific finding/claim as a result. "target" should be the claim text itself (as close to verbatim as reasonable), not a method/dataset name.
+
+Worked example of the INTRODUCES / TRAINED_ON traps above, using placeholder names (apply the same reasoning to whatever real names appear in your input, never these placeholders themselves): if the text says "We propose Method A, which builds on the Method B architecture. Method A is pretrained on Corpus X and fine-tuned on Dataset Y" — then INTRODUCES→Method A only (not Method B, which is prior work being built on), TRAINED_ON→Corpus X only (the pretraining data), and EVALUATES_ON→Dataset Y (the fine-tuning/downstream data), never TRAINED_ON→Dataset Y.
 
 Every relationship needs "evidence_text": the actual sentence or clause from the given text that supports it — copy it, do not paraphrase or invent it. And a "confidence" from 0.0 to 1.0, varied honestly by how explicit the text is.
 
@@ -66,7 +72,9 @@ Respond with ONLY a single JSON object — no markdown code fences, no prose bef
   "relations": [
     {"type": "USES_METHOD", "target": "...", "evidence_text": "...", "confidence": 0.0},
     {"type": "EVALUATES_ON", "target": "<dataset name>", "metric": "..." or null, "value": "..." or null, "method": "..." or null, "evidence_text": "...", "confidence": 0.0},
+    {"type": "TRAINED_ON", "target": "<dataset/corpus name>", "evidence_text": "...", "confidence": 0.0},
     {"type": "INTRODUCES", "target": "...", "evidence_text": "...", "confidence": 0.0},
+    {"type": "DISTILLED_FROM", "target": "<teacher method name>", "evidence_text": "...", "confidence": 0.0},
     {"type": "REPORTS_RESULT", "target": "...", "evidence_text": "...", "confidence": 0.0}
   ]
 }"""

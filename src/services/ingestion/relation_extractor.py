@@ -1,7 +1,7 @@
 """LLM-based relationship extraction (EXTRACT-002) — two passes per the
 ticket. Pass A (intra-paper) relates the paper to its own entities
-(USES_METHOD, EVALUATES_ON, INTRODUCES, REPORTS_RESULT) — no outside
-knowledge needed. Pass B (cross-paper) relates the paper's entities to a
+(USES_METHOD, EVALUATES_ON, TRAINED_ON, INTRODUCES, DISTILLED_FROM,
+REPORTS_RESULT) — no outside knowledge needed. Pass B (cross-paper) relates the paper's entities to a
 given candidate list of entities from OTHER papers (EXTENDS, OUTPERFORMS,
 CONTRADICTS, CITES) — the candidate list stands in for a real Neo4j lookup,
 which doesn't exist until EXTRACT-004 (graph writer) lands.
@@ -29,7 +29,14 @@ from src.utils.llm_json import parse_json_response, to_confidence
 
 logger = structlog.get_logger()
 
-_INTRA_TYPES = {"USES_METHOD", "EVALUATES_ON", "INTRODUCES", "REPORTS_RESULT"}
+_INTRA_TYPES = {
+    "USES_METHOD",
+    "EVALUATES_ON",
+    "TRAINED_ON",
+    "INTRODUCES",
+    "DISTILLED_FROM",
+    "REPORTS_RESULT",
+}
 _CROSS_TYPES = {"EXTENDS", "OUTPERFORMS", "CONTRADICTS", "CITES"}
 
 

@@ -86,6 +86,22 @@ async def test_fuzzy_match_confirmed_by_llm_merges(mock_llm_client, monkeypatch)
     mock_llm_client.assert_called_once()
 
 
+async def test_verification_call_uses_its_own_independent_key_ring(mock_llm_client, monkeypatch):
+    # EVAL-002 FIX E: verification must not share llm_client's module-level
+    # ring with bulk extraction — otherwise it silently inherits whatever
+    # fallback provider extraction already exhausted its way down to.
+    _mock_embed(monkeypatch)
+    mock_llm_client.return_value = "DECISION: YES\nREASON: same model, hyphen variant."
+    existing = _entity("GPT-2", id="node-1", description="a language model")
+
+    resolve_entity(_entity("GPT2", description="a language model"), [existing])
+
+    assert mock_llm_client.call_args.kwargs["key_ring"] is entity_resolver._verification_key_ring
+    from src.utils import llm_client
+
+    assert entity_resolver._verification_key_ring is not llm_client._key_ring
+
+
 async def test_fuzzy_match_rejected_by_llm_creates_new(mock_llm_client, monkeypatch):
     _mock_embed(monkeypatch)
     mock_llm_client.return_value = "DECISION: NO\nREASON: different entities despite similar name."

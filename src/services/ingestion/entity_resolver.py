@@ -78,6 +78,19 @@ from src.vectorstore.embedder import embed
 
 logger = structlog.get_logger()
 
+# EVAL-002 FIX E live finding: verification calls were going through
+# llm_client's shared module-level key ring — once bulk entity/relation
+# extraction (many calls per paper) had already fallen all the way to the
+# local Ollama fallback, every subsequent verification call inherited that
+# same degraded state for the rest of the process, even though this step
+# only ever fires for the rare fuzzy/embedding-ambiguous case. A weak local
+# model gave false "same entity" confirmations here (e.g. two genuinely
+# different methods) and false negatives (two names for the same thing not
+# confirmed) that a stronger cloud model didn't make. Its own ring means
+# verification's low call volume gets its own shot at cloud headroom
+# instead of starting already-exhausted.
+_verification_key_ring = llm_client._KeyRing()
+
 
 @dataclass
 class ResolvableEntity:
@@ -255,6 +268,7 @@ def _llm_confirms_match(new_entity: ResolvableEntity, candidate: ResolvableEntit
         model=settings.extraction_model,
         max_tokens=100,
         temperature=0.0,
+        key_ring=_verification_key_ring,
     )
     first_line = next((line for line in raw.strip().splitlines() if line.strip()), "")
     return "yes" in first_line.lower()

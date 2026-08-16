@@ -52,7 +52,7 @@ from src.utils.llm_json import parse_json_response
 API_BASE_URL = "http://localhost:8000/api/v1"
 DATASET_PATH = Path(__file__).parent / "eval_dataset.json"
 RESULTS_DIR = Path(__file__).parent / "eval_results"
-_JUDGE_MODEL = "llama3.1:8b"  # local Ollama — see module docstring for why this is pinned
+_JUDGE_MODEL = "qwen2.5:14b"  # local Ollama — see module docstring for why this is pinned
 
 _JUDGE_SYSTEM_PROMPT = """You are grading a QA system's answer against a gold reference answer. \
 Score 1.0 if the answer is fully correct and addresses the question, 0.5 if it's partially \

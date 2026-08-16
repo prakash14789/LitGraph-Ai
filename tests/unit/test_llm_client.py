@@ -15,7 +15,16 @@ def test_every_provider_has_a_base_url_and_key_list():
     assert (
         set(_BASE_URLS)
         == set(_API_KEYS)
-        == {"gemini", "openai", "anthropic", "groq", "openrouter", "ollama"}
+        == {
+            "gemini",
+            "openai",
+            "anthropic",
+            "groq",
+            "openrouter",
+            "cerebras",
+            "huggingface",
+            "ollama",
+        }
     )
 
 
@@ -206,6 +215,34 @@ def test_complete_fails_over_on_server_overload_not_just_quota():
     assert result == "answer from groq"
     mock_sleep.assert_not_called()
     assert ring.provider() == "groq"
+
+
+# --- EVAL-002 FIX E: caller-supplied independent key_ring ---------------
+
+
+@patch("src.utils.llm_client._rate_limiter", _RateLimiter(max_per_minute=999))
+@patch("src.utils.llm_client._client")
+def test_complete_uses_caller_supplied_ring_instead_of_shared_one(mock_client):
+    shared_ring = _KeyRing(["shared-key"])
+    own_ring = _KeyRing(["own-key-1", "own-key-2"])
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _http_error(RateLimitError, 429),  # own-key-1 exhausted
+        _fake_response("answer from own ring"),
+    ]
+    mock_client.return_value = client
+
+    with (
+        patch("src.utils.llm_client._key_ring", shared_ring),
+        patch("time.sleep"),
+    ):
+        result = complete("sys", "user", model="m", key_ring=own_ring)
+
+    assert result == "answer from own ring"
+    # the caller's own ring advanced...
+    assert own_ring.current() == "own-key-2"
+    # ...but the shared module ring a caller *didn't* pass was never touched.
+    assert shared_ring.current() == "shared-key"
 
 
 def test_rate_limiter_throttles_when_limit_hit():

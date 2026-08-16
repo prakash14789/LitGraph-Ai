@@ -1,4 +1,5 @@
 import cytoscape, { type Core, type EdgeSingular, type NodeSingular } from "cytoscape";
+import fcose from "cytoscape-fcose";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 import {
@@ -6,6 +7,7 @@ import {
   DEFAULT_EDGE_STYLE,
   DEFAULT_NODE_STYLE,
   EDGE_STYLE_BY_TYPE,
+  fcoseLayoutOptions,
   NODE_STYLE_BY_LABEL,
   toElements,
 } from "@/lib/graphElements";
@@ -13,6 +15,10 @@ import { litgraphApi } from "@/services/api";
 import type { SubgraphEdge } from "@/types";
 
 export type { CanvasNode } from "@/lib/graphElements";
+
+// Registered once at module load, not inside the component — cytoscape.use
+// is a global registration, re-running it on every mount would be redundant.
+cytoscape.use(fcose);
 
 // GRAPH-002. Shared component — FE-004 (mini panel) and GRAPH-003 (full
 // explorer) both mount this with their own nodes/edges; double-click-to-
@@ -25,10 +31,13 @@ export type { CanvasNode } from "@/lib/graphElements";
 const DOUBLE_TAP_MS = 300;
 const PULSE_INTERVAL_MS = 450;
 
-// GRAPH-003's layout switcher — all three ship with cytoscape core, no
-// extra layout plugin. "hierarchy" maps to breadthfirst (cytoscape has no
-// layout literally named "hierarchy").
-export type GraphLayoutName = "cose" | "breadthfirst" | "grid";
+// GRAPH-003's layout switcher. "hierarchy" maps to breadthfirst (cytoscape
+// has no layout literally named "hierarchy"). "fcose" (cytoscape-fcose
+// plugin) replaced the built-in "cose" as the force-directed option — cose's
+// naive force simulation degenerates into a dense, heavily-crossed clump
+// past ~150 nodes; fcose's constraint-based layout stays readable at the
+// 200+ node graphs this page actually loads.
+export type GraphLayoutName = "fcose" | "breadthfirst" | "grid";
 
 export interface GraphCanvasHandle {
   zoomIn: () => void;
@@ -58,7 +67,7 @@ export const GraphCanvas = forwardRef<
     className,
     compact = false,
     highlightIds,
-    layout = "cose",
+    layout = "fcose",
     pulseIds,
   },
   ref
@@ -269,8 +278,11 @@ export const GraphCanvas = forwardRef<
       // overlap — this makes layout treat the label as part of the node's
       // bounding box instead.
       nodeDimensionsIncludeLabels: true,
-      ...(layout === "cose" ? { idealEdgeLength: compact ? 60 : 90 } : {}),
-    }).run();
+      ...(layout === "fcose" ? fcoseLayoutOptions(compact) : {}),
+      // A non-literal `name` (it's the GraphLayoutName variable, not a
+      // string constant) stops TS from picking the right per-layout options
+      // overload — same cast needed below for the layout-switcher effect.
+    } as cytoscape.LayoutOptions).run();
     hasLaidOutRef.current = true;
     hasMountedLayoutPropRef.current = true;
 
@@ -304,8 +316,8 @@ export const GraphCanvas = forwardRef<
       animationDuration: 400,
       fit: true,
       nodeDimensionsIncludeLabels: true,
-      ...(layout === "cose" ? { idealEdgeLength: compact ? 60 : 90 } : {}),
-    }).run();
+      ...(layout === "fcose" ? fcoseLayoutOptions(compact) : {}),
+    } as cytoscape.LayoutOptions).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout]);
 

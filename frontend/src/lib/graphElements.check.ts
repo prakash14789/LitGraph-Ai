@@ -4,7 +4,7 @@
 // functions. Run: node src/lib/graphElements.check.ts
 import assert from "node:assert/strict";
 
-import { edgeLabel, nodeSize, toElements } from "./graphElements.ts";
+import { edgeLabel, fcoseLayoutOptions, neighborIds, nodeSize, toElements } from "./graphElements.ts";
 
 // nodeSize: Claim is always fixed size regardless of usage_count.
 assert.equal(nodeSize(["Claim"], 999), 30);
@@ -70,5 +70,21 @@ const compactEdge = compactElements.find((e) => "source" in e.data) as
   | { data: { edgeLabel: string } }
   | undefined;
 assert.equal(compactEdge?.data.edgeLabel, "");
+
+// fcoseLayoutOptions: compact mode uses a tighter ideal edge length, same
+// as nodeSize's compact clamp.
+assert.equal(fcoseLayoutOptions(false).idealEdgeLength, 90);
+assert.equal(fcoseLayoutOptions(true).idealEdgeLength, 60);
+
+// neighborIds: finds both outgoing and incoming neighbors, de-duped, and
+// ignores edges that don't touch the given node.
+const graph = [
+  { source: "p1", target: "m1", rel_type: "USES_METHOD", properties: {} },
+  { source: "p1", target: "c1", rel_type: "REPORTS_RESULT", properties: {} },
+  { source: "m1", target: "p1", rel_type: "INTRODUCES", properties: {} }, // duplicate direction
+  { source: "m1", target: "d1", rel_type: "EVALUATES_ON", properties: {} },
+];
+assert.deepEqual(new Set(neighborIds("p1", graph)), new Set(["m1", "c1"]));
+assert.equal(neighborIds("not-in-graph", graph).length, 0);
 
 console.log("graphElements.check.ts: all checks passed");

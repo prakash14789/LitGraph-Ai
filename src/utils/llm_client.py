@@ -30,6 +30,8 @@ _BASE_URLS = {
     "anthropic": "https://api.anthropic.com/v1/",
     "groq": "https://api.groq.com/openai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "huggingface": "https://router.huggingface.co/v1",
     "ollama": settings.ollama_base_url,
 }
 
@@ -50,10 +52,15 @@ _API_KEYS = {
             settings.groq_api_key_fallback,
             settings.groq_api_key_fallback_2,
             settings.groq_api_key_fallback_3,
+            settings.groq_api_key_fallback_4,
+            settings.groq_api_key_fallback_5,
+            settings.groq_api_key_fallback_6,
         ]
         if k
     ],
     "openrouter": [settings.openrouter_api_key],
+    "cerebras": [settings.cerebras_api_key],
+    "huggingface": [settings.huggingface_api_key],
     "ollama": ["ollama"],
 }
 
@@ -71,12 +78,26 @@ _API_KEYS = {
 # running on this machine's own hardware), but the cloud models are
 # higher-quality, so prefer them while they have headroom and only fall
 # back to local once every cloud option is actually exhausted.
-_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter", "ollama"]
+_FALLBACK_PROVIDERS = ["gemini", "groq", "huggingface", "cerebras", "openrouter", "ollama"]
 _FALLBACK_MODEL = {
     "gemini": "gemini-flash-latest",
     "groq": "llama-3.3-70b-versatile",
+    # EVAL-002 live finding: this key's account has no Llama model access —
+    # client.models.list() returned only zai-glm-4.7/gpt-oss-120b/gemma-4-31b,
+    # and all three 402'd ("Payment required") on a real test call. gpt-oss-120b
+    # picked as the best-quality id to have wired up once/if billing is added —
+    # unusable until then, same as any exhausted-quota provider in this chain.
+    "cerebras": "gpt-oss-120b",
+    "huggingface": "meta-llama/Llama-3.3-70B-Instruct",
     "openrouter": "openai/gpt-oss-20b:free",
-    "ollama": "llama3.1:8b",
+    # Switched from llama3.1:8b to qwen2.5:14b (2026-08-16, user request) —
+    # nearly 2x the parameters, still free/local/unlimited. Live finding
+    # this session: llama3.1:8b's entity-resolution verification calls gave
+    # false "same entity" confirmations on genuinely different methods
+    # (see entity_resolver.py's _verification_key_ring) — a stronger local
+    # model is the general mitigation for whenever cloud quota is fully
+    # exhausted and Ollama is truly the last resort.
+    "ollama": "qwen2.5:14b",
 }
 
 
@@ -148,11 +169,11 @@ class _KeyRing:
 _key_ring = _KeyRing()
 
 
-def _client() -> OpenAI:
+def _client(ring: _KeyRing) -> OpenAI:
     # Not cached: a rotated key/provider must produce a fresh client on the
     # very next call, and constructing an OpenAI() instance does no network
     # I/O — the cache was saving essentially nothing.
-    return OpenAI(api_key=_key_ring.current(), base_url=_BASE_URLS[_key_ring.provider()])
+    return OpenAI(api_key=ring.current(), base_url=_BASE_URLS[ring.provider()])
 
 
 class _RateLimiter:
@@ -189,6 +210,8 @@ def complete(
     model: str,
     max_tokens: int = 2048,
     temperature: float = 0.3,
+    *,
+    key_ring: "_KeyRing | None" = None,
 ) -> str:
     """Send one chat completion, return the text.
 
@@ -208,13 +231,23 @@ def complete(
     transient errors (timeout/connection), retries up to _MAX_ATTEMPTS with
     exponential backoff. Auth and bad-request errors fail immediately —
     retrying won't fix a bad key or a content-policy rejection.
+
+    key_ring (EVAL-002 FIX E): defaults to the shared module-level ring used
+    by bulk entity/relation extraction. A caller with its own independent
+    ring (entity_resolver's verification calls — see that module) doesn't
+    inherit whatever fallback provider bulk extraction has already
+    exhausted its way down to in the same process; it fails over on its own
+    call volume instead, which for a low-volume caller usually means it
+    stays on better-quality cloud providers even when extraction is already
+    stuck on the local fallback.
     """
+    ring = key_ring or _key_ring
     backoff_attempt = 0
     while True:
         _rate_limiter.wait()
-        effective_model = _key_ring.model_override() or model
+        effective_model = ring.model_override() or model
         try:
-            response = _client().chat.completions.create(
+            response = _client(ring).chat.completions.create(
                 model=effective_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -226,7 +259,7 @@ def complete(
             usage = response.usage
             logger.info(
                 "llm.completion",
-                provider=_key_ring.provider(),
+                provider=ring.provider(),
                 model=effective_model,
                 prompt_tokens=usage.prompt_tokens if usage else None,
                 completion_tokens=usage.completion_tokens if usage else None,
@@ -235,7 +268,7 @@ def complete(
         except (AuthenticationError, BadRequestError):
             raise
         except (RateLimitError, InternalServerError, APIStatusError):
-            if _key_ring.advance():
+            if ring.advance():
                 continue
             backoff_attempt += 1
             if backoff_attempt >= _MAX_ATTEMPTS:

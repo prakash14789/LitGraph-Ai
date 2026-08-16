@@ -17,6 +17,7 @@ whole paper's extraction (same contract as pdf_parser.parse_pdf).
 from dataclasses import dataclass, field
 
 import structlog
+from rapidfuzz import fuzz
 
 from src.config import settings
 from src.services.generation.prompts import (
@@ -29,6 +30,12 @@ from src.utils.llm_json import parse_json_response, to_confidence
 logger = structlog.get_logger()
 
 _CLAIM_TYPES = {"RESULT", "HYPOTHESIS", "LIMITATION", "FUTURE_WORK"}
+# fuzz.partial_ratio floor for claim-to-section grounding (FIX-8 live
+# incident: an unrelated legal/political passage ended up as a claim on an
+# ML paper — the LLM drew on training data instead of the given text).
+# Partial, not exact: the LLM paraphrases claims, so a verbatim-substring
+# check (fine for entity names) would false-positive on every real claim.
+_CLAIM_GROUNDING_THRESHOLD = 40.0
 
 
 @dataclass
@@ -84,7 +91,7 @@ def extract_entities(section_name: str, section_text: str) -> SectionExtraction:
         logger.error("entity_extractor.unparseable_response", section=section_name)
         return SectionExtraction()
 
-    return _to_extraction(data)
+    return _to_extraction(data, section_name, section_text)
 
 
 def _call_llm(user_prompt: str) -> str:
@@ -97,7 +104,27 @@ def _call_llm(user_prompt: str) -> str:
     )
 
 
-def _to_extraction(data: dict) -> SectionExtraction:
+def _is_grounded_name(name: str, section_text: str) -> bool:
+    """Exact-substring check for method/dataset names — catches OCR/symbol-
+    merge garbage (e.g. "JXLNet" for "XLNet") the LLM invented rather than
+    copied from the text it was actually given."""
+    return name in section_text
+
+
+def _drop_ungrounded(items: list, name_of, section_text: str, section_name: str, kind: str) -> list:
+    kept = []
+    for item in items:
+        name = name_of(item)
+        if _is_grounded_name(name, section_text):
+            kept.append(item)
+        else:
+            logger.warning(
+                "entity_extractor.name_not_grounded", section=section_name, kind=kind, name=name
+            )
+    return kept
+
+
+def _to_extraction(data: dict, section_name: str, section_text: str) -> SectionExtraction:
     if not isinstance(data, dict):
         return SectionExtraction()
 
@@ -145,9 +172,34 @@ def _to_extraction(data: dict) -> SectionExtraction:
     claims = [c for c in claims if c.claim_type in _CLAIM_TYPES]
 
     threshold = settings.entity_confidence_threshold
+    methods = [m for m in methods if m.confidence >= threshold]
+    datasets = [d for d in datasets if d.confidence >= threshold]
+    metrics = [m for m in metrics if m.confidence >= threshold]
+    claims = [c for c in claims if c.confidence >= threshold]
+
+    # FIX-7: drop method/dataset names the LLM invented rather than copied
+    # from the given text (OCR/symbol-merge garbage like "JXLNet").
+    methods = _drop_ungrounded(methods, lambda m: m.name, section_text, section_name, "Method")
+    datasets = _drop_ungrounded(datasets, lambda d: d.name, section_text, section_name, "Dataset")
+
+    # FIX-8: drop claims that don't plausibly trace back to this section's
+    # text at all — live incident: unrelated legal/political text ended up
+    # as a claim on an ML paper (the model drawing on training data instead
+    # of the given text). Not silently dropped: logged so drop frequency is
+    # visible, since a high rate would point at swapping EXTRACTION_MODEL.
+    grounded_claims = []
+    for c in claims:
+        score = fuzz.partial_ratio(c.text, section_text)
+        if score >= _CLAIM_GROUNDING_THRESHOLD:
+            grounded_claims.append(c)
+        else:
+            logger.warning(
+                "entity_extractor.claim_not_grounded",
+                section=section_name,
+                text=c.text[:200],
+                score=score,
+            )
+
     return SectionExtraction(
-        methods=[m for m in methods if m.confidence >= threshold],
-        datasets=[d for d in datasets if d.confidence >= threshold],
-        metrics=[m for m in metrics if m.confidence >= threshold],
-        claims=[c for c in claims if c.confidence >= threshold],
+        methods=methods, datasets=datasets, metrics=metrics, claims=grounded_claims
     )

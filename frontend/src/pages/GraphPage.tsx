@@ -6,10 +6,27 @@ import { useSearchParams } from "react-router-dom";
 import { GraphCanvas, type GraphCanvasHandle, type GraphLayoutName } from "@/components/GraphCanvas";
 import { Button } from "@/components/ui/button";
 import { DEFAULT_ENTITY_BORDER_CLASS, displayName, ENTITY_BORDER_CLASS } from "@/lib/entityColors";
-import { DEFAULT_EDGE_STYLE, EDGE_STYLE_BY_TYPE, NODE_STYLE_BY_LABEL } from "@/lib/graphElements";
+import {
+  DEFAULT_EDGE_STYLE,
+  EDGE_STYLE_BY_TYPE,
+  neighborIds,
+  NODE_STYLE_BY_LABEL,
+} from "@/lib/graphElements";
 import { cn } from "@/lib/utils";
 import { litgraphApi } from "@/services/api";
+import type { CanvasNode } from "@/components/GraphCanvas";
 import type { EntityDetailResponse, GraphNode, SubgraphEdge } from "@/types";
+
+// Progressive disclosure: a fresh load of 200+ nodes across every type at
+// once is the "messy grid of everything" complaint this page used to get —
+// Claim/Dataset start hidden, revealed per-node (see revealedIds below)
+// instead of all at once. Paper/Method stay visible by default since
+// they're what a first-glance "what papers/methods exist" view needs.
+const HIDDEN_BY_DEFAULT = ["Claim", "Dataset"];
+// Node types whose neighbors get progressively revealed on click — the
+// inverse of HIDDEN_BY_DEFAULT's own "everything else stays hidden until
+// asked for" intent.
+const EXPANDABLE_TYPES = new Set(["Paper", "Method"]);
 
 // GRAPH-003. Full graph loads on visit (GET /graph/subgraph with no
 // entity_id — the whole-graph snapshot GRAPH-003 itself added to that
@@ -23,7 +40,7 @@ import type { EntityDetailResponse, GraphNode, SubgraphEdge } from "@/types";
 // chosen collection — a real backend filter now, not the client-side
 // hide/show the type/relationship chips above do.
 const LAYOUT_OPTIONS: { value: GraphLayoutName; label: string }[] = [
-  { value: "cose", label: "Force" },
+  { value: "fcose", label: "Force" },
   { value: "breadthfirst", label: "Hierarchy" },
   { value: "grid", label: "Grid" },
 ];
@@ -53,9 +70,13 @@ export function GraphPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
-  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set(HIDDEN_BY_DEFAULT));
   const [hiddenRelTypes, setHiddenRelTypes] = useState<Set<string>>(new Set());
-  const [layout, setLayout] = useState<GraphLayoutName>("cose");
+  const [layout, setLayout] = useState<GraphLayoutName>("fcose");
+  // Progressive disclosure: ids revealed by clicking a Paper/Method node
+  // whose neighbors include a hidden-by-default type — additive to
+  // hiddenTypes's blanket hide, not a replacement (see visibleNodes below).
+  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [entityDetail, setEntityDetail] = useState<EntityDetailResponse | null>(null);
@@ -81,6 +102,7 @@ export function GraphPage() {
       .then(({ data }) => {
         setAllNodes(data.nodes);
         setAllEdges(data.edges);
+        setRevealedIds(new Set()); // fresh graph, no per-node reveals carried over
       })
       .catch(() => setError("Failed to load graph."))
       .finally(() => setLoading(false));
@@ -113,9 +135,24 @@ export function GraphPage() {
   );
 
   const visibleNodes = useMemo(
-    () => allNodes.filter((n) => !hiddenTypes.has(n.labels[0])),
-    [allNodes, hiddenTypes]
+    () => allNodes.filter((n) => !hiddenTypes.has(n.labels[0]) || revealedIds.has(n.id)),
+    [allNodes, hiddenTypes, revealedIds]
   );
+
+  // Progressive disclosure: clicking a Paper/Method node reveals its own
+  // hidden-type (Claim/Dataset) neighbors — already in allNodes/allEdges
+  // from the initial load, just filtered out by hiddenTypes, so this is a
+  // pure client-side reveal, no second fetch needed.
+  const revealNeighbors = (node: CanvasNode) => {
+    const nodeType = node.labels[0];
+    if (!EXPANDABLE_TYPES.has(nodeType)) return;
+    const hidden = neighborIds(node.id, allEdges).filter((id) => {
+      const neighbor = allNodes.find((n) => n.id === id);
+      return neighbor && hiddenTypes.has(neighbor.labels[0]);
+    });
+    if (hidden.length === 0) return;
+    setRevealedIds((prev) => new Set([...prev, ...hidden]));
+  };
   const visibleEdges = useMemo(() => {
     const visibleIds = new Set(visibleNodes.map((n) => n.id));
     return allEdges.filter(
@@ -217,7 +254,10 @@ export function GraphPage() {
                 layout={layout}
                 pulseIds={pulseIds}
                 highlightIds={highlightIds}
-                onNodeSelect={(n) => setSelectedId(n.id)}
+                onNodeSelect={(n) => {
+                  setSelectedId(n.id);
+                  revealNeighbors(n);
+                }}
                 onDeselect={() => setSelectedId(null)}
               />
               <Legend />

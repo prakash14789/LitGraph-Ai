@@ -67,6 +67,20 @@ export function nodeSize(
   return Math.round(Math.min(max, base + Math.sqrt(usageCount ?? 0) * scale));
 }
 
+// fcose-specific layout tuning (idealEdgeLength/nodeRepulsion aren't valid
+// options for the other layouts, so this only ever gets spread in when
+// layout === "fcose" — see GraphCanvas.tsx). quality "default" (not
+// "proof") — "proof" trades noticeably more compute time for marginal
+// crossing-count improvement past ~150 nodes, not worth it for an
+// interactive canvas.
+export function fcoseLayoutOptions(compact: boolean) {
+  return {
+    idealEdgeLength: compact ? 60 : 90,
+    nodeRepulsion: 6000,
+    quality: "default" as const,
+  };
+}
+
 export function edgeLabel(relType: string, properties: Record<string, unknown>): string {
   const style = EDGE_STYLE_BY_TYPE[relType];
   if (relType === "EVALUATES_ON") {
@@ -76,6 +90,21 @@ export function edgeLabel(relType: string, properties: Record<string, unknown>):
     return `outperforms ${properties.margin}`;
   }
   return style?.label ?? "";
+}
+
+// Progressive disclosure (GraphPage's Claim/Dataset default-hide): the ids
+// of every node directly connected to `nodeId` by an edge in `edges`,
+// either direction. Pure/testable — GraphPage uses this to reveal a
+// clicked Paper/Method node's hidden Claim/Dataset neighbors without a
+// second network round-trip (they're already in the loaded subgraph, just
+// filtered out client-side).
+export function neighborIds(nodeId: string, edges: SubgraphEdge[]): string[] {
+  const ids = new Set<string>();
+  for (const e of edges) {
+    if (e.source === nodeId) ids.add(e.target);
+    else if (e.target === nodeId) ids.add(e.source);
+  }
+  return [...ids];
 }
 
 export function toElements(nodes: CanvasNode[], edges: SubgraphEdge[], compact = false) {

@@ -90,9 +90,41 @@ async def test_filters_entities_below_confidence_threshold(mock_llm_client, monk
         ]
     )
 
-    result = extract_entities("method", "text")
+    result = extract_entities("method", "We describe confident-method and unsure-method.")
     names = [m.name for m in result.methods]
     assert names == ["confident-method"]
+
+
+async def test_drops_method_name_not_present_in_section_text(mock_llm_client):
+    # FIX-7: an invented/merged name (e.g. OCR garbage like "JXLNet") never
+    # appears verbatim in the section it was supposedly extracted from.
+    mock_llm_client.return_value = _response(
+        methods=[
+            {"name": "XLNet", "confidence": 0.9},
+            {"name": "JXLNet", "confidence": 0.9},
+        ]
+    )
+
+    result = extract_entities("method", "We compare against XLNet as a baseline.")
+    assert [m.name for m in result.methods] == ["XLNet"]
+
+
+async def test_drops_claim_not_grounded_in_section_text(mock_llm_client):
+    # FIX-8: a claim whose text doesn't plausibly trace back to the given
+    # section (cross-paper/off-topic contamination) is dropped, not kept.
+    mock_llm_client.return_value = _response(
+        claims=[
+            {"text": "Widgets improve throughput by 12%.", "type": "RESULT", "confidence": 0.9},
+            {
+                "text": "The court ruled in favor of the plaintiff in 1998.",
+                "type": "RESULT",
+                "confidence": 0.9,
+            },
+        ]
+    )
+
+    result = extract_entities("results", "Our widgets improve throughput by 12% over baseline.")
+    assert [c.text for c in result.claims] == ["Widgets improve throughput by 12%."]
 
 
 async def test_drops_claims_with_unrecognized_type(mock_llm_client):
@@ -103,7 +135,7 @@ async def test_drops_claims_with_unrecognized_type(mock_llm_client):
         ]
     )
 
-    result = extract_entities("discussion", "text")
+    result = extract_entities("discussion", "A valid result. Not a real type.")
     assert len(result.claims) == 1
     assert result.claims[0].text == "A valid result."
 
@@ -122,7 +154,7 @@ async def test_retry_recovers_if_second_attempt_is_valid(mock_llm_client):
         _response(methods=[{"name": "GPT", "confidence": 0.9}]),
     ]
 
-    result = extract_entities("intro", "text")
+    result = extract_entities("intro", "We build on GPT.")
     assert result.methods[0].name == "GPT"
 
 

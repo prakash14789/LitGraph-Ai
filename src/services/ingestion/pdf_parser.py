@@ -53,6 +53,48 @@ _NUMBERED_REF_RE = re.compile(r"\n(?=\[?\d{1,3}\]?[.\s])")
 _NAME_YEAR_REF_RE = re.compile(
     r"\n(?=[A-Z][\w\-À-ÿ]*[.,]?\s[^\n]{0,120}?(?:19|20)\d{2}\.)", re.DOTALL
 )
+# Byline noise: a line that isn't itself an author name — footnote/symbol-
+# only markers, an email address (bare or the "{a,b,c}@domain" shared-
+# institutional style), or an affiliation/institution line. Live finding:
+# these sit right after the real author names on several real papers
+# (Attention Is All You Need, T5, XLNet, DistilBERT) and were getting
+# swept into the author list by the multi-line collector below.
+_NOISE_LINE_RE = re.compile(
+    r"^[†‡∗\*\d\s,]*$"
+    r"|^\{.*\}.*@.*\..*$"
+    # A curly-brace shared-email block ("{yinhanliu,myleott,...}@fb.com")
+    # can itself wrap across two lines — the alternative above only matches
+    # when the closing "}" and "@" are on the same line. A real author name
+    # never starts with a literal "{", so any line opening with one is
+    # noise regardless of whether it's self-contained on this line.
+    r"|^\{"
+    r"|.*@[\w.-]+\.\w+.*$"
+    r"|^\s*(university|department|institute|lab|google|microsoft|stanford|mit)\b"
+    # A line that STARTS with a footnote marker followed by real text is an
+    # affiliation footnote ("† Paul G. Allen School of...", "§ Facebook
+    # AI") regardless of which institution it names — RoBERTa's real PDF
+    # live finding: the keyword list above only knows a handful of
+    # institutions by name and missed these. An author's own trailing
+    # marker ("Yinhan Liu∗§") is a suffix, not a line-leading prefix, so
+    # this can't mistake a real name line for noise.
+    r"|^[†‡∗\*§]+\s+\S",
+    re.IGNORECASE,
+)
+# Bumped from the original 4 (EVAL-002 live finding, ELECTRA's real PDF):
+# that cap counted genuine author-name lines, but a per-author-block byline
+# (name/affiliation/email repeated per author, see _extract_metadata) needs
+# one slot per author, not per whole-byline chunk — 4 was silently truncating
+# any paper with more than 4 authors laid out that way.
+_MAX_AUTHOR_LINES = 12
+# Safety cap on total lines scanned hunting for authors before "abstract" —
+# guards against a runaway scan if a PDF never has "abstract" on its own
+# line (noise lines are skipped, not a stop condition, so without this the
+# loop would otherwise only be bounded by the page's line count).
+_MAX_PREAMBLE_SCAN_LINES = 40
+# Footnote/affiliation markers stuck directly against a name with no space
+# (e.g. "Yinhan Liu∗§", RoBERTa's real PDF) — trailing only, so a genuine
+# name character is never eaten.
+_FOOTNOTE_MARKER_RE = re.compile(r"[†‡∗\*§]+$")
 
 
 @dataclass
@@ -201,13 +243,80 @@ def _extract_metadata(doc: fitz.Document) -> tuple[str | None, list[str] | None]
         title_lines.append(line["text"])
     title = " ".join(title_lines).strip() or None
 
+    # Multi-line byline collection: a single line was capturing only the
+    # first author on multi-column/wrapped bylines (GPT-3-style 30+ author
+    # lists). Keep collecting non-blank, non-noise lines until "abstract" or
+    # a scan-length safety cap — whichever comes first. A noise line
+    # (affiliation/email/footnote) is *skipped*, not a stop condition: live
+    # finding (ELECTRA's real PDF) — some bylines interleave one line per
+    # author (name, then that author's own affiliation, then their email,
+    # repeated), not one name-block followed by a noise block at the end.
+    # Stopping at the first noise line there only ever captured the first
+    # author. Skipping past noise instead correctly reaches every author's
+    # name line in both layouts; _MAX_PREAMBLE_SCAN_LINES bounds how far
+    # this can run if "abstract" is never found on its own line.
     authors = None
     if title:
+        author_lines = []
+        scanned = 0
         for line in lines[start + len(title_lines) :]:
-            if line["text"] and "abstract" not in line["text"].lower():
-                authors = [a.strip() for a in re.split(r",| and ", line["text"]) if a.strip()]
+            text = line["text"]
+            if not text:
+                continue
+            low = text.lower()
+            if "abstract" in low:
                 break
+            scanned += 1
+            if scanned > _MAX_PREAMBLE_SCAN_LINES:
+                break
+            if _NOISE_LINE_RE.match(text) or len(text) > 200:
+                continue
+            author_lines.append(text)
+            if len(author_lines) >= _MAX_AUTHOR_LINES:
+                break
+        if author_lines:
+            # Split per line, not on the lines joined together — a
+            # per-author-block layout has already isolated one name per
+            # line by the time noise is filtered out above, and joining
+            # first would glue those names together with no delimiter left
+            # to split back on. A line that itself lists several
+            # comma-separated names (the older shared-byline layout) still
+            # splits correctly since the split happens on that line alone.
+            authors = []
+            for line_text in author_lines:
+                authors.extend(a.strip() for a in re.split(r",| and ", line_text) if a.strip())
+            # Live finding (BERT's real PDF): some bylines have no comma/
+            # "and" separator at all ("Jacob Devlin Ming-Wei Chang Kenton
+            # Lee Kristina Toutanova" as one run-on line) — the split above
+            # then yields a single oversized "name". Only kick in when that
+            # happened (len == 1) and it's implausibly long for one person's
+            # name, so a genuine short comma-less byline is left alone.
+            if len(authors) == 1 and len(authors[0].split()) > 4:
+                authors = _split_comma_less_names(authors[0])
+            # Trailing footnote/affiliation markers (∗§†‡ etc.) sit directly
+            # against the name with no space (e.g. "Yinhan Liu∗§", RoBERTa's
+            # real PDF) — strip them so the stored name is just the name.
+            authors = [_FOOTNOTE_MARKER_RE.sub("", a).strip() for a in authors]
+            authors = [a for a in authors if a]
     return title, authors
+
+
+def _split_comma_less_names(text: str) -> list[str]:
+    """Fallback for comma/and-less bylines — groups consecutive capitalized
+    tokens into ~2-word name chunks. Imperfect (a 3-word name like "Jacob R.
+    Devlin" would split wrong), but far better than one giant fused string."""
+    tokens = text.split()
+    names = []
+    current: list[str] = []
+    for tok in tokens:
+        if current and len(current) >= 2 and tok[:1].isupper():
+            names.append(" ".join(current))
+            current = [tok]
+        else:
+            current.append(tok)
+    if current:
+        names.append(" ".join(current))
+    return names
 
 
 def _extract_tables(doc: fitz.Document) -> list[ParsedTable]:

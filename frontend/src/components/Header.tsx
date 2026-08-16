@@ -18,10 +18,10 @@ export function Header() {
   return (
     <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-background/80 px-4 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="flex items-center gap-2.5 font-semibold tracking-tight text-foreground">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/70 shadow-sm shadow-primary/30">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/70 shadow-md shadow-primary/40 ring-1 ring-primary/20">
           <Network className="h-4 w-4 text-primary-foreground" />
         </div>
-        LitGraph
+        <span className="bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text">LitGraph</span>
       </div>
 
       <nav className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/40 p-1">
@@ -31,9 +31,9 @@ export function Header() {
             to={tab.to}
             className={({ isActive }) =>
               cn(
-                "rounded-md px-3 py-1.5 text-sm font-medium transition-all",
+                "relative rounded-md px-3 py-1.5 text-sm font-medium transition-all",
                 isActive
-                  ? "bg-card text-primary shadow-sm"
+                  ? "bg-card text-primary shadow-sm after:absolute after:inset-x-2.5 after:-bottom-1 after:h-0.5 after:rounded-full after:bg-primary"
                   : "text-muted-foreground hover:text-foreground"
               )
             }

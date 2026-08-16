@@ -57,9 +57,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # LLM
-    llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter", "ollama"] = (
-        "gemini"
-    )
+    llm_provider: Literal[
+        "gemini", "openai", "anthropic", "groq", "openrouter", "cerebras", "huggingface", "ollama"
+    ] = "gemini"
     gemini_api_key: str = ""
     # Optional 2nd Gemini key — llm_client.py switches to it automatically
     # once gemini_api_key hits a 429 quota error. A free key's daily cap can
@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     groq_api_key_fallback_2: str = ""
     # Optional 4th Groq key — added 2026-08-15 (EVAL-002). Same _KeyRing.
     groq_api_key_fallback_3: str = ""
+    # Optional 5th Groq key — added 2026-08-15 during the ingestion-pipeline
+    # fixes' live verification, same day the ring hit key_index=3 mid-BERT-
+    # reprocess. Same _KeyRing.
+    groq_api_key_fallback_4: str = ""
+    # Optional 6th Groq key — added 2026-08-15, same session (the 5th key
+    # alone wasn't enough headroom to avoid falling to Gemini/OpenRouter
+    # mid-BERT-reprocess). Same _KeyRing, same org-level-quota caveat.
+    groq_api_key_fallback_5: str = ""
+    # Optional 7th Groq key — added 2026-08-15, same session. Same
+    # _KeyRing, same org-level-quota caveat as the 4th/5th/6th keys.
+    groq_api_key_fallback_6: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     # OpenRouter — single OpenAI-compatible endpoint proxying many vendors'
@@ -95,6 +106,17 @@ class Settings(BaseSettings):
     # gemini-free-tier-daily-cap.md's hard-won methodology lesson before
     # assuming this one's headroom either).
     openrouter_api_key: str = ""
+    # Cerebras — OpenAI-compatible endpoint, Llama models. Added 2026-08-16
+    # (EVAL-002) as a single test key, scoped by the user to only this
+    # session's RoBERTa/ELECTRA reprocess (not a general-purpose key like
+    # the Groq ring) — still wired through the normal fallback chain since
+    # that's the only thing running when it's used.
+    cerebras_api_key: str = ""
+    # Hugging Face Inference Providers router — OpenAI-compatible, added
+    # 2026-08-16 (EVAL-002) once the Cerebras key above turned out to need
+    # billing set up before any model on it would answer. Live-verified
+    # working: meta-llama/Llama-3.3-70B-Instruct via this token.
+    huggingface_api_key: str = ""
     # EVAL-001 — local Ollama, genuinely unlimited (runs on this machine's own
     # GPU/CPU, no daily cap of any kind), the real fix for "every free cloud
     # tier ran dry the same day". host.docker.internal is Docker Desktop's

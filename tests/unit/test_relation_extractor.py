@@ -68,6 +68,25 @@ async def test_intra_evaluates_on_keeps_metric_and_value_in_properties(mock_llm_
     assert result[0].properties == {"metric": "F1", "value": "93.2"}
 
 
+async def test_intra_parses_distilled_from_with_paper_as_default_source(mock_llm_client):
+    mock_llm_client.return_value = _response(
+        [
+            {
+                "type": "DISTILLED_FROM",
+                "target": "BERT",
+                "evidence_text": "DistilBERT is distilled from BERT.",
+                "confidence": 0.9,
+            }
+        ]
+    )
+
+    result = extract_intra_paper_relations("method", "DistilBERT is distilled from BERT.", ["BERT"])
+    assert len(result) == 1
+    assert result[0].relation_type == "DISTILLED_FROM"
+    assert result[0].source == "paper"
+    assert result[0].target == "BERT"
+
+
 async def test_intra_drops_relation_type_outside_allowed_set(mock_llm_client):
     mock_llm_client.return_value = _response(
         [

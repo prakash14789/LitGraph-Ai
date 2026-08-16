@@ -40,12 +40,10 @@ between the two writes can leave a node's Chroma record briefly stale.
 Acceptable at this write volume; upgrade path is an outbox/retry if that
 ever matters.
 
-ponytail: CREATE (not MERGE) for relationships, per the ticket. Reprocessing
-a paper can therefore create duplicate edges — the ticket's own acceptance
-criteria only requires *entity* (node) idempotency, not relationship
-idempotency, so this isn't a gap against spec. Upgrade path: EXTRACT-005
-deletes a paper's existing relationships before re-writing on reprocess, if
-that's ever needed.
+Relationships are MERGEd too (not CREATEd) — reprocessing a paper converges
+onto the same edge instead of duplicating it. occurrence_count tracks how
+many times a relationship was (re-)written, in case that's ever useful
+signal; nothing reads it yet.
 """
 
 import hashlib
@@ -73,10 +71,13 @@ _MERGE_KEY_BY_LABEL = {
 _EMBEDDED_LABELS = {"Method", "Dataset"}
 
 _MERGE_NODE = "MERGE (n:{label} {{{key}: $key_value}}) SET n += $props RETURN elementId(n) AS id"
-_CREATE_REL = (
+_MERGE_REL = (
     "MATCH (a) WHERE elementId(a) = $source_id "
     "MATCH (b) WHERE elementId(b) = $target_id "
-    "CREATE (a)-[r:{rel_type}]->(b) SET r += $props RETURN elementId(r) AS id"
+    "MERGE (a)-[r:{rel_type}]->(b) "
+    "ON CREATE SET r += $props, r.occurrence_count = 1 "
+    "ON MATCH SET r.occurrence_count = coalesce(r.occurrence_count, 1) + 1 "
+    "RETURN elementId(r) AS id"
 )
 
 
@@ -218,7 +219,7 @@ async def write_relationship(
     driver = get_driver()
     async with driver.session() as session:
         result = await session.run(
-            _CREATE_REL.format(rel_type=rel_type),
+            _MERGE_REL.format(rel_type=rel_type),
             source_id=source_id,
             target_id=target_id,
             props=properties,

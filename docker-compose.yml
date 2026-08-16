@@ -1,5 +1,9 @@
 services:
   backend:
+    # image + build together: `docker compose pull` grabs the CI-built image
+    # from Docker Hub (.github/workflows/docker-publish.yml) instead of
+    # rebuilding locally; `docker compose build` still works for local dev.
+    image: prakash7976/litgraph-backend:latest
     build: .
     restart: unless-stopped
     ports:
@@ -67,6 +71,7 @@ services:
       retries: 10
 
   celery_worker:
+    image: prakash7976/litgraph-backend:latest
     build: .
     restart: unless-stopped
     command: celery -A src.tasks.celery_app worker --loglevel=info

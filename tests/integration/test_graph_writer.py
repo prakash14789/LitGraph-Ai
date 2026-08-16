@@ -229,3 +229,40 @@ async def test_write_relationship_carries_confidence_and_evidence_properties():
             get_collection(settings.chroma_collection_entities).delete(
                 ids=[f"entity_{method_node_id}"]
             )
+
+
+async def test_write_relationship_is_idempotent_on_reprocess():
+    # FIX-1: reprocessing a paper used to CREATE a second, duplicate edge.
+    # write_relationship now MERGEs — same edge, occurrence_count increments.
+    paper_id = f"GW-TEST-PAPER-{uuid.uuid4()}"
+    method_name = f"GW-TEST-METHOD-{uuid.uuid4()}"
+    method_node_id = None
+    try:
+        paper_node_id = await graph_writer.write_paper(paper_id, "t", [], None, None, None)
+        method_node_id = await graph_writer.write_named_entity(
+            "Method", _resolution(method_name, "d"), paper_id=paper_id
+        )
+        await graph_writer.write_relationship(
+            "USES_METHOD", paper_node_id, method_node_id, {"confidence": 0.8}
+        )
+        await graph_writer.write_relationship(
+            "USES_METHOD", paper_node_id, method_node_id, {"confidence": 0.9}
+        )
+
+        driver = get_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                "MATCH (:Paper {paper_id: $pid})-[r:USES_METHOD]->(:Method {canonical_name: $name}) "
+                "RETURN count(r) AS edge_count, r.occurrence_count AS occurrence_count",
+                pid=paper_id,
+                name=method_name,
+            )
+            record = await result.single()
+        assert record["edge_count"] == 1  # not duplicated
+        assert record["occurrence_count"] == 2
+    finally:
+        await _cleanup(paper_id, method_name)
+        if method_node_id is not None:
+            get_collection(settings.chroma_collection_entities).delete(
+                ids=[f"entity_{method_node_id}"]
+            )
