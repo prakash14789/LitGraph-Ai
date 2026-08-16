@@ -67,6 +67,13 @@ export const litgraphApi = {
     if (collectionId) form.append("collection_id", collectionId);
     return api.post<UploadResult[]>("/ingest/upload", form);
   },
+  // POLISH-004 — `identifier` accepts a bare arXiv id or a full abs/pdf URL,
+  // resolved server-side (see _parse_arxiv_id in src/api/routes/ingest.py).
+  importArxiv: (identifier: string, collectionId?: string | null) =>
+    api.post<UploadResult>("/ingest/arxiv", {
+      identifier,
+      collection_id: collectionId || undefined,
+    }),
   getIngestionStatus: (jobId: string) => api.get<JobStatus>(`/ingest/status/${jobId}`),
 
   // Papers

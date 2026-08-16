@@ -34,6 +34,7 @@ export function PapersPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+  const [arxivInput, setArxivInput] = useState("");
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null);
   // "" = All papers (unfiltered, matches GET /papers with no collection_id
   // — see api.ts). Also the collection new uploads get assigned to below.
@@ -74,6 +75,21 @@ export function PapersPage() {
       void queryClient.invalidateQueries({ queryKey: ["collections"] });
       const rejected = results.filter((r) => r.status === "rejected");
       setUploadErrors(rejected.map((r) => `${r.filename}: ${r.error ?? "rejected"}`));
+    },
+  });
+
+  const arxivMutation = useMutation({
+    mutationFn: (identifier: string) =>
+      litgraphApi.importArxiv(identifier, activeCollectionId || null).then((r) => r.data),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      if (result.status === "rejected") {
+        setUploadErrors([`${result.filename}: ${result.error ?? "rejected"}`]);
+      } else {
+        setUploadErrors([]);
+        setArxivInput("");
+      }
     },
   });
 
@@ -120,6 +136,12 @@ export function PapersPage() {
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     uploadMutation.mutate(Array.from(files));
+  };
+
+  const handleArxivImport = () => {
+    const identifier = arxivInput.trim();
+    if (!identifier || arxivMutation.isPending) return;
+    arxivMutation.mutate(identifier);
   };
 
   const handleNewCollection = () => {
@@ -254,18 +276,26 @@ export function PapersPage() {
         </div>
       )}
 
-      {/* ArXiv import — POST /ingest/arxiv is POLISH-004's scope, not built
-          yet. Input shown-but-disabled (same pattern as Header's dark-mode
-          button) so it doesn't look like a live control that silently
-          does nothing. */}
+      {/* ArXiv import (POLISH-004) — accepts a bare id or a full abs/pdf
+          URL, resolved server-side. */}
       <div className="mt-4 flex items-center gap-2">
         <input
-          disabled
-          placeholder="ArXiv URL import — coming soon (POLISH-004)"
-          className="flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground"
+          value={arxivInput}
+          onChange={(e) => setArxivInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleArxivImport();
+          }}
+          disabled={arxivMutation.isPending}
+          placeholder="ArXiv URL or id (e.g. 1706.03762) — import directly"
+          className="flex-1 rounded-md border border-input bg-card px-3 py-2 text-sm disabled:opacity-60"
         />
-        <Button disabled size="sm" variant="outline">
-          Import
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!arxivInput.trim() || arxivMutation.isPending}
+          onClick={handleArxivImport}
+        >
+          {arxivMutation.isPending ? "Importing…" : "Import"}
         </Button>
       </div>
 

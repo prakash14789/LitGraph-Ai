@@ -136,14 +136,11 @@ A question is answered by **both** a vector search over chunk/entity embeddings 
 
 ## Roadmap
 
-Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script.
+Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script, request-ID error handling + duplicate-upload guard, rate limiting (slowapi), one-click ArXiv import.
 
 Not yet built (see [`docs/05_FEATURE_TICKETS.md`](docs/05_FEATURE_TICKETS.md) for full specs):
 
-- Broader error handling / edge-case hardening across the API
-- Rate limiting on public-facing endpoints
 - Dark mode
-- One-click ArXiv import (paste a URL instead of uploading a PDF)
 - A self-audit "faithfulness check" — does a generated answer actually follow from its cited context?
 - Graph data export (GraphML/CSV)
 
