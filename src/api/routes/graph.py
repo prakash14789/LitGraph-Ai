@@ -1,7 +1,9 @@
 """GET /graph/overview, GET /graph/subgraph, GET /graph/entity/{id},
-GET /graph/search (GRAPH-001)."""
+GET /graph/search (GRAPH-001), GET /graph/export (POLISH-007)."""
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from src.api.schemas.graph import (
     EntityDetailResponse,
@@ -35,6 +37,12 @@ router = APIRouter()
 # whole-graph snapshot (no relevance ranking to trim by) is the one path
 # most likely to actually hit the ceiling in practice.
 _MAX_FULL_GRAPH_NODES = 150
+
+# POLISH-007's export — a data dump, not a rendered view, so it isn't bound
+# by _MAX_FULL_GRAPH_NODES's canvas-smoothness tuning. Still a real ceiling
+# rather than unbounded, as a safety valve against a single request pulling
+# an unreasonably large response.
+_MAX_EXPORT_NODES = 10_000
 
 # Fulltext index per searchable label (src/graph/schema.py) — Metric has
 # none, same scope trim as usage_count's node-sizing (04_FRONTEND_
@@ -164,6 +172,15 @@ async def graph_subgraph(
             for e in subgraph.edges
         ]
 
+    return await _build_subgraph_response(node_rows, edge_rows)
+
+
+async def _build_subgraph_response(
+    node_rows: list[dict], edge_rows: list[dict]
+) -> GraphSubgraphResponse:
+    """Shared by graph_subgraph() and graph_export() (POLISH-007) — same
+    row-dict shape (see _whole_graph_rows/_collection_graph_rows), just
+    reached via different queries with different caps."""
     by_label: dict[str, list[str]] = {}
     for row in node_rows:
         by_label.setdefault(row["labels"][0], []).append(row["id"])
@@ -190,10 +207,34 @@ async def graph_subgraph(
     return GraphSubgraphResponse(nodes=nodes, edges=edges)
 
 
-async def _whole_graph_rows() -> tuple[list[dict], list[dict]]:
+@router.get("/graph/export", response_model=GraphSubgraphResponse)
+async def graph_export(
+    response: Response,
+    format: Literal["json"] = Query("json"),
+    collection_id: str | None = Query(
+        None, description="POLISH-005b — scope export to one collection"
+    ),
+) -> GraphSubgraphResponse:
+    """POLISH-007. Same node/edge shape GET /graph/subgraph's whole-graph
+    path already returns, just uncapped (_MAX_EXPORT_NODES vs that
+    endpoint's canvas-tuned _MAX_FULL_GRAPH_NODES) — `format` is currently
+    JSON-only (query param kept for forward compatibility with the ticket's
+    own `?format=json`, not because another format exists yet)."""
+    if collection_id is not None:
+        node_rows, edge_rows = await _collection_graph_rows(
+            collection_id, max_nodes=_MAX_EXPORT_NODES
+        )
+    else:
+        node_rows, edge_rows = await _whole_graph_rows(limit=_MAX_EXPORT_NODES)
+
+    response.headers["Content-Disposition"] = 'attachment; filename="litgraph-graph-export.json"'
+    return await _build_subgraph_response(node_rows, edge_rows)
+
+
+async def _whole_graph_rows(limit: int = _MAX_FULL_GRAPH_NODES) -> tuple[list[dict], list[dict]]:
     driver = get_driver()
     async with driver.session() as session:
-        node_result = await session.run(WHOLE_GRAPH_NODES, limit=_MAX_FULL_GRAPH_NODES)
+        node_result = await session.run(WHOLE_GRAPH_NODES, limit=limit)
         node_rows_raw = [r async for r in node_result]
         ids = [r["id"] for r in node_rows_raw]
         edge_result = await session.run(WHOLE_GRAPH_EDGES, ids=ids)
@@ -219,7 +260,9 @@ async def _whole_graph_rows() -> tuple[list[dict], list[dict]]:
     return node_rows, edge_rows
 
 
-async def _collection_graph_rows(collection_id: str) -> tuple[list[dict], list[dict]]:
+async def _collection_graph_rows(
+    collection_id: str, max_nodes: int = _MAX_FULL_GRAPH_NODES
+) -> tuple[list[dict], list[dict]]:
     """Same row shape as _whole_graph_rows() (plain dicts, not GraphNode/
     GraphEdge) so both feed the same downstream node/edge-building code in
     graph_subgraph(). Seeds from every Paper in the collection and reuses
@@ -238,7 +281,7 @@ async def _collection_graph_rows(collection_id: str) -> tuple[list[dict], list[d
         paper_ids=[],
     )
     subgraph = await retrieve_subgraph(
-        seeds, hops=2, collection_id=collection_id, max_nodes=_MAX_FULL_GRAPH_NODES
+        seeds, hops=2, collection_id=collection_id, max_nodes=max_nodes
     )
     node_rows = [
         {"id": n.node_id, "labels": n.labels, "properties": n.properties} for n in subgraph.nodes
