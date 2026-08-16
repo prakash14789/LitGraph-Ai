@@ -187,6 +187,15 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           )}
         </div>
 
+        {/* POLISH-006: the faithfulness self-audit's warning, shown as its
+            own banner rather than folded into the answer bubble — it's
+            metadata about the answer, not part of it. */}
+        {message.warning && (
+          <div className="max-w-[85%] rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            {message.warning}
+          </div>
+        )}
+
         {message.citations && message.citations.length > 0 && (
           <div className="flex max-w-[85%] flex-wrap gap-2">
             {message.citations.map((c) => (

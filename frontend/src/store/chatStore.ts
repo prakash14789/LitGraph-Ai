@@ -11,6 +11,7 @@ export interface ChatMessage {
   citations?: Citation[];
   retrievalStats?: RetrievalStats;
   retrievedSubgraph?: RetrievedSubgraph; // FE-004/FE-005: context panel + entity modal
+  warning?: string | null; // POLISH-006 — faithfulness self-audit warning, if any
 }
 
 // "Folder-wise chat": each collection (folder) keeps its own conversation
@@ -71,6 +72,7 @@ export const useChatStore = create<ChatState>()(
                   citations: data.citations,
                   retrievalStats: data.retrieval_stats,
                   retrievedSubgraph: data.retrieved_subgraph,
+                  warning: data.warning,
                 },
               ],
             },

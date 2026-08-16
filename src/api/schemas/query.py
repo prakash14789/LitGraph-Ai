@@ -82,6 +82,10 @@ class QueryResponse(BaseModel):
     citations: list[Citation]
     retrieved_subgraph: RetrievedSubgraphSchema
     retrieval_stats: RetrievalStats
+    # POLISH-006 — set when the self-audit (faithfulness.py) scores the
+    # answer below settings.faithfulness_threshold; None when it passed
+    # (the common case) or the audit itself failed (fails open, see there).
+    warning: str | None = None
 
 
 class CompareQueryRequest(BaseModel):

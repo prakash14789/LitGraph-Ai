@@ -46,6 +46,7 @@ export interface QueryResponse {
   citations: Citation[];
   retrieved_subgraph: RetrievedSubgraph;
   retrieval_stats: RetrievalStats;
+  warning: string | null; // POLISH-006 — set when the faithfulness self-audit scores low
 }
 
 export interface SourceChunk {

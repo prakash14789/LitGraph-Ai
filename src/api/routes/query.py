@@ -50,6 +50,7 @@ from src.db import AsyncSessionLocal
 from src.models.paper import Paper
 from src.models.query_log import QueryLog
 from src.repositories import query_log_repository
+from src.services.generation.faithfulness import check_faithfulness
 from src.services.generation.generator import generate_answer as generate_graphrag_answer
 from src.services.retrieval.context_builder import build_context
 from src.services.retrieval.graph_retriever import retrieve_subgraph
@@ -155,6 +156,10 @@ async def _query_graphrag_impl(body: QueryRequest, db: AsyncSession) -> QueryRes
     context = build_context(ranked, seeds)
     answer = await asyncio.to_thread(generate_graphrag_answer, body.query, context)
     citations = await _build_citations(db, ranked, seeds)
+    # POLISH-006: a second LLM call, after the primary answer — checked
+    # against the same context it was generated from. Sequential (needs the
+    # finished answer), not parallelized with anything else in this path.
+    warning = await asyncio.to_thread(check_faithfulness, answer, context.text)
 
     return QueryResponse(
         answer=answer,
@@ -169,6 +174,7 @@ async def _query_graphrag_impl(body: QueryRequest, db: AsyncSession) -> QueryRes
             context_truncated=context.truncated,
             latency_ms=int((time.monotonic() - start) * 1000),
         ),
+        warning=warning,
     )
 
 

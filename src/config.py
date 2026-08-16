@@ -142,6 +142,13 @@ class Settings(BaseSettings):
     generation_max_tokens: int = 2048
     generation_temperature: float = 0.3
     llm_rate_limit_rpm: int = 15  # Gemini free tier default (Flash: 15 RPM)
+    # POLISH-006: below this, the self-audit warns the answer may not be
+    # fully grounded (src/services/generation/faithfulness.py). 0.6 rather
+    # than a stricter number — the judge is scoring free-form generated
+    # prose against retrieved context, not exact-string grounding, so some
+    # slack for reasonable paraphrase is expected, not itself a red flag.
+    faithfulness_threshold: float = 0.6
+    faithfulness_max_tokens: int = 200
 
     # Embedding
     embedding_provider: Literal["local", "openai"] = "local"

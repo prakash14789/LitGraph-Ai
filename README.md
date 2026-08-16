@@ -136,12 +136,10 @@ A question is answered by **both** a vector search over chunk/entity embeddings 
 
 ## Roadmap
 
-Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script, request-ID error handling + duplicate-upload guard, rate limiting (slowapi), one-click ArXiv import.
+Shipped: core ingestion pipeline (parse → chunk → extract → resolve → graph), hybrid retrieval, Chat/Graph/Papers/Compare pages, collection management, automated evaluation harness, demo seed script, request-ID error handling + duplicate-upload guard, rate limiting (slowapi), one-click ArXiv import, dark mode, a self-audit faithfulness check on GraphRAG answers.
 
 Not yet built (see [`docs/05_FEATURE_TICKETS.md`](docs/05_FEATURE_TICKETS.md) for full specs):
 
-- Dark mode
-- A self-audit "faithfulness check" — does a generated answer actually follow from its cited context?
 - Graph data export (GraphML/CSV)
 
 ## Docs

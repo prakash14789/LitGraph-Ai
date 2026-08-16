@@ -97,7 +97,12 @@ async def test_graphrag_query_returns_answer_citations_and_subgraph(
         assert response.status_code == 200
         body = response.json()
         assert body["answer"] == mock_llm_client.return_value
-        mock_llm_client.assert_called_once()
+        # POLISH-006: a second LLM call (the faithfulness self-audit) now
+        # follows the first. Its input here isn't valid JSON (it's the same
+        # canned answer string, reused verbatim by the mock), so it fails
+        # open — no warning, not a raised error.
+        assert mock_llm_client.call_count == 2
+        assert body["warning"] is None
 
         citation_ids = {c["paper_id"] for c in body["citations"]}
         assert paper_id in citation_ids

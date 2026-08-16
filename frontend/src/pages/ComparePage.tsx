@@ -116,6 +116,12 @@ export function ComparePage() {
             >
               {result && (
                 <>
+                  {/* POLISH-006 — same warning banner as ChatPage's MessageBubble */}
+                  {result.graphrag.warning && (
+                    <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                      {result.graphrag.warning}
+                    </div>
+                  )}
                   <StatsRow
                     latencyMs={result.graphrag.retrieval_stats.latency_ms}
                     tokens={result.graphrag.retrieval_stats.context_tokens}

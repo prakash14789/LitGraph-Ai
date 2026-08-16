@@ -64,15 +64,19 @@ async def test_compare_runs_both_pipelines_in_parallel(test_client, mock_llm_cli
         body = response.json()
         assert body["graphrag"]["answer"] == "a compared answer"
         assert body["vanilla"]["answer"] == "a compared answer"
-        assert mock_llm_client.call_count == 2
+        # POLISH-006 added a 3rd call: graphrag's own path now makes 2
+        # sequential LLM calls (answer, then the faithfulness self-audit on
+        # it) where it used to make 1; vanilla still makes 1.
+        assert mock_llm_client.call_count == 3
 
-        # serial would take >= 2 * _SLEEP_SECONDS plus each pipeline's own
-        # real DB/Chroma/embedding overhead on top (measured ~0.9s+ for a
-        # serial run); parallel measured ~0.48-0.65s. 1.8x the single sleep
-        # (0.54s) sits well below a realistic serial total while leaving
-        # comfortable margin above the ~1x-plus-overhead parallel case, so
-        # it distinguishes the two without being flaky either direction.
-        # The floor confirms the mocked sleep actually ran (not skipped).
+        # graphrag's own path is now the dominant one — 2 sequential sleeps
+        # (answer + faithfulness) vs vanilla's 1 — so a genuinely parallel
+        # compare should track ~2x sleep, not grow further for vanilla
+        # running alongside it. Serial (all 3 calls back-to-back) would be
+        # >= 3x sleep plus overhead. Same empirical-margin approach as
+        # before POLISH-006 (was 1.8x a single sleep for a 1-vs-1 setup);
+        # scaled to the new 2-vs-1 dominant path.
+        # The floor confirms both of graphrag's own sequential calls ran.
         #
         # COMPARE-002 added a real, permanent extra step after gather(): an
         # INSERT persisting the query_log row the vote endpoint attaches to.
@@ -81,9 +85,9 @@ async def test_compare_runs_both_pipelines_in_parallel(test_client, mock_llm_cli
         # elapsed, not a multiple of _SLEEP_SECONDS — a fixed-ms buffer
         # models that better than bumping the multiplier would.
         _QUERY_LOG_INSERT_BUFFER = 0.2
-        assert elapsed > _SLEEP_SECONDS * 0.9
-        assert elapsed < _SLEEP_SECONDS * 1.8 + _QUERY_LOG_INSERT_BUFFER
-        assert body["total_latency_ms"] >= int(_SLEEP_SECONDS * 1000)
+        assert elapsed > _SLEEP_SECONDS * 2 * 0.9
+        assert elapsed < _SLEEP_SECONDS * 2 * 1.8 + _QUERY_LOG_INSERT_BUFFER
+        assert body["total_latency_ms"] >= int(_SLEEP_SECONDS * 2 * 1000)
         assert body["query_log_id"]
     finally:
         chunks.delete(ids=[chunk_id])
