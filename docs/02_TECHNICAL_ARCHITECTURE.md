@@ -5,6 +5,16 @@
 > **Author:** Prakash  
 > **Status:** Draft  
 
+> **2026-08-17 update:** the local Postgres/Neo4j/ChromaDB/Redis containers this doc
+> originally designed around have been migrated to managed cloud services (Supabase,
+> Neo4j AuraDB, Qdrant Cloud, Upstash). Sections 1, 2, 4.3, and 6 below have been updated
+> to reflect that — they describe the current setup. Deeper in this doc (Section 3's
+> file-by-file walkthrough and its many "Built EXTRACT-004", "real Chroma container"-style
+> comments) still says ChromaDB throughout: that's a deliberate choice, not an oversight —
+> those comments are a build history describing what was true when each ticket landed, and
+> rewriting them to say "Qdrant" would misrepresent history that predates the migration.
+> Trust Sections 1/2/4.3/6 (and the README) for current state.
+
 ---
 
 ## 1. System Overview
@@ -52,11 +62,12 @@ LitGraph is a **GraphRAG system** for academic literature. It ingests research p
 │  │                     Data Layer                                   │ │
 │  │                                                                  │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐      │ │
-│  │  │  PostgreSQL  │  │   Neo4j      │  │  ChromaDB /        │      │ │
-│  │  │  (metadata,  │  │  (knowledge  │  │  Qdrant            │      │ │
-│  │  │   users,     │  │   graph)     │  │  (vector           │      │ │
-│  │  │   sessions)  │  │              │  │   embeddings)      │      │ │
+│  │  │  PostgreSQL  │  │   Neo4j      │  │  Qdrant Cloud      │      │ │
+│  │  │  (Supabase,  │  │  (AuraDB     │  │  (vector           │      │ │
+│  │  │   metadata,  │  │   Cloud,     │  │   embeddings)      │      │ │
+│  │  │   job status)│  │   graph)     │  │                    │      │ │
 │  │  └──────────────┘  └──────────────┘  └────────────────────┘      │ │
+│  │       all three above are managed cloud services, not containers  │ │
 │  │                                                                  │ │
 │  └──────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
@@ -81,16 +92,16 @@ LitGraph is a **GraphRAG system** for academic literature. It ingests research p
 | Layer | Technology | Why This |
 |-------|-----------|----------|
 | **Backend Framework** | FastAPI (Python) | Async support, auto-generated OpenAPI docs, Pydantic validation, best Python ML ecosystem integration |
-| **Primary Database** | PostgreSQL | Stores paper metadata, user data, sessions, extraction job status. Reliable, well-known, free |
-| **Knowledge Graph** | Neo4j (Community Edition) | Purpose-built for graph queries (Cypher). Handles relationship traversal natively. Free community edition sufficient for portfolio scale |
-| **Vector Store** | ChromaDB (MVP) → Qdrant (production) | ChromaDB: zero-config, embedded, fast to start. Qdrant: better performance at scale, filtering, production-grade |
+| **Primary Database** | PostgreSQL, hosted on Supabase Cloud (migrated off a local container) | Stores paper metadata, extraction job status, collections. Managed = no local container to keep alive, back up, or share across machines |
+| **Knowledge Graph** | Neo4j, hosted on AuraDB Cloud free tier (migrated off a local Community Edition container) | Purpose-built for graph queries (Cypher). Handles relationship traversal natively. Free Aura tier sufficient for portfolio scale, same as the community edition it replaced |
+| **Vector Store** | Qdrant Cloud (migrated off ChromaDB's MVP embedded mode — this row's original "ChromaDB (MVP) → Qdrant (production)" plan is exactly what happened) | `src/vectorstore/store.py`'s `QdrantCollectionAdapter` mirrors ChromaDB's old collection interface, so the migration stayed contained to that one file — nothing above the vectorstore layer changed |
 | **LLM API** | **Default (build phase): Gemini API free tier**, with a 2nd Gemini key auto-switched to on quota exhaustion, and **Groq (free, OpenAI-compatible) as a manual fallback provider**. **Scale option: OpenAI (GPT-4o-mini/GPT-4o) OR Anthropic (Haiku/Sonnet)** — swap via `LLM_PROVIDER` config, no code changes | Gemini free tier: measured live (EXTRACT-001) at a much stricter ~20 requests/day/model than the generally-published 1,500 RPD figure — the 2nd key + Groq fallback exist because of that. Groq: no card, 1,000 RPD on `llama-3.3-70b-versatile`, live-verified working through the same unified client. OpenAI/Anthropic wired in from day one so scaling later (higher quality, higher volume, no training-data usage) is a config flip, not a rebuild |
 | **Embedding Model** | **Default: `all-MiniLM-L6-v2`** (local, sentence-transformers, free, no API call) — **Scale option: `text-embedding-3-small`** (OpenAI, better quality, costs money) | Local model = zero cost + zero rate limit during build. Swap to OpenAI embeddings later if retrieval quality needs a bump at scale |
 | **PDF Parsing** | **MVP: PyMuPDF (fitz) only.** GROBID considered but **not implemented** — no docker-compose service exists for it. Listed here as a documented future upgrade path, not a current dependency | PyMuPDF: fast, extracts text/tables/structure via heuristics, zero extra infra. GROBID would give academic-paper-aware parsing (cleaner section/reference extraction) but is a heavy Java service — add later only if PyMuPDF heuristics prove insufficient on real papers |
 | **Frontend** | React + TypeScript + Tailwind CSS | Standard modern stack. TypeScript catches bugs. Tailwind speeds up styling |
 | **Graph Visualization** | Cytoscape.js (primary) or D3.js (custom) | Cytoscape: built for graph/network visualization, has layout algorithms. D3: more control but more work |
-| **Task Queue** | Celery + Redis | Paper ingestion is slow (LLM calls per paper). Celery handles async background jobs. Redis as broker |
-| **Containerization** | Docker + Docker Compose | Packages all services (FastAPI, Neo4j, PostgreSQL, ChromaDB, Redis) into one `docker-compose up` command |
+| **Task Queue** | Celery + Redis, hosted on Upstash Cloud (migrated off a local Redis container) | Paper ingestion is slow (LLM calls per paper). Celery handles async background jobs. Managed Redis as broker + result backend — same reasoning as the other three data stores |
+| **Containerization** | Docker + Docker Compose | Packages `backend` + `celery_worker` into one `docker-compose up` command. Postgres/Neo4j/Qdrant/Redis are managed cloud services now, not containers — see §6.3 |
 
 ### 2.2 Development Tools
 
@@ -109,7 +120,9 @@ LitGraph is a **GraphRAG system** for academic literature. It ingests research p
 
 ```
 litgraph/
-├── docker-compose.yml              # All services: FastAPI, Neo4j, PostgreSQL, ChromaDB, Redis
+├── docker-compose.yml              # backend + celery_worker only — Postgres/Neo4j/Qdrant/Redis
+                                     # are managed cloud services (Supabase/AuraDB/Qdrant Cloud/
+                                     # Upstash), not containers; see §6.3
 ├── Dockerfile                      # Backend container
 ├── pyproject.toml                   # Poetry dependencies
 ├── .env.example                     # Environment variable template
@@ -1622,7 +1635,12 @@ CREATE FULLTEXT INDEX claim_search IF NOT EXISTS FOR (c:Claim) ON EACH [c.text];
 // (c1:Claim)-[:CONTRADICTS {evidence_text: "...", confidence: 0.75}]->(c2:Claim)
 ```
 
-### 4.3 Vector Store Schema (ChromaDB)
+### 4.3 Vector Store Schema (Qdrant Cloud, formerly ChromaDB)
+
+Migrated from a local ChromaDB container to Qdrant Cloud — `QdrantCollectionAdapter`
+(`src/vectorstore/store.py`) preserves this exact `id`/`document`/`embedding`/`metadata`
+shape and the `.get()`/`.add()`/`.delete()`/`.query()` interface, so the schema below is
+unchanged by the migration; only where it's physically hosted changed.
 
 ```python
 # Collection: paper_chunks
@@ -1650,8 +1668,11 @@ CREATE FULLTEXT INDEX claim_search IF NOT EXISTS FOR (c:Claim) ON EACH [c.text];
         "entity_type": "Method",
         "canonical_name": "BERT",
         "source_papers": "uuid1,uuid2"  # comma-joined string, not a list — Chroma metadata
-                                         # values must be str/int/float/bool (EXTRACT-004,
-                                         # graph_writer.py, found live)
+                                         # values had to be str/int/float/bool (EXTRACT-004,
+                                         # graph_writer.py, found live); kept as-is post-Qdrant-
+                                         # migration even though Qdrant's payload allows richer
+                                         # types, since QdrantCollectionAdapter deliberately
+                                         # preserves the original Chroma-shaped contract
     }
 }
 ```
@@ -1712,7 +1733,7 @@ PDF Upload
 ┌─────────────────────────────────────────────────┐
 │ Step 3: Embedding + Vector Store                 │
 │                                                  │
-│ - Embed each chunk → ChromaDB                    │
+│ - Embed each chunk → Qdrant Cloud                │
 │ - This enables vanilla RAG (baseline) AND        │
 │   provides seed vectors for hybrid retrieval     │
 └──────────────────────┬──────────────────────────┘
@@ -1806,16 +1827,17 @@ PDF Upload
                        │
                        ▼
 ┌─────────────────────────────────────────────────┐
-│ Step 7: Graph Write (Neo4j + Chroma)             │
+│ Step 7: Graph Write (Neo4j AuraDB + Qdrant)      │
 │                                                  │
 │ - MERGE nodes (create or update) in Neo4j        │
 │ - CREATE relationships with properties in Neo4j  │
 │ - Embed entity nodes (name + description text)   │
 │ - Store embedding as a Neo4j node property        │
 │   (lets Cypher-side similarity ops use it too)    │
-│ - ALSO write the same embedding to ChromaDB's     │
-│   `entity_embeddings` collection:                 │
-│     chroma.entity_embeddings.add(                 │
+│ - ALSO write the same embedding to Qdrant's       │
+│   `entity_embeddings` collection (via the         │
+│   ChromaDB-shaped QdrantCollectionAdapter):       │
+│     entities.add(                                 │
 │       id=f"entity_{neo4j_node_id}",                │
 │       embedding=entity_embedding,                  │
 │       document=canonical_name + description,       │
@@ -1825,10 +1847,11 @@ PDF Upload
 │   This step was previously missing — Retrieval    │
 │   Step 2 depends on this collection for seed       │
 │   entity search and returns nothing without it.    │
-│ - New entity → add to Chroma. Merged/updated       │
+│ - New entity → add to Qdrant. Merged/updated       │
 │   entity (from resolution) → upsert (overwrite     │
-│   existing id) so Chroma never drifts from Neo4j.  │
-│ - Update PostgreSQL job status → completed         │
+│   existing id) so Qdrant never drifts from Neo4j.  │
+│ - Update PostgreSQL (Supabase) job status →        │
+│   completed                                        │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -1852,9 +1875,9 @@ User Query: "What methods improved on BERT for question answering?"
 ┌─────────────────────────────────────────────────┐
 │ Step 2: Vector Seed Retrieval                    │
 │                                                  │
-│ - Search ChromaDB (entity_embeddings collection) │
+│ - Search Qdrant (entity_embeddings collection)   │
 │   for top-5 similar entities                     │
-│ - Search ChromaDB (paper_chunks collection)      │
+│ - Search Qdrant (paper_chunks collection)        │
 │   for top-10 similar chunks                      │
 │ - Extract entity/paper node IDs from results     │
 │   → these are "seed nodes"                       │
@@ -2001,36 +2024,32 @@ APP_PORT=8000
 LOG_LEVEL=INFO
 CORS_ORIGINS=http://localhost:3000     # Frontend URL
 
-# ─── PostgreSQL ───
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432                     # container-internal port — always 5432
-POSTGRES_HOST_PORT=5432                # host-side port docker-compose maps to. Change this (and
-                                        # POSTGRES_PORT to match, for host-side tools) if you already
-                                        # have a local Postgres on 5432 — a real conflict hit during
-                                        # SETUP-004 build, since a native Postgres install silently
-                                        # shadowed the container on the default port
-POSTGRES_DB=litgraph
-POSTGRES_USER=litgraph_user
-POSTGRES_PASSWORD=<generate-strong-password>   # required, no default — app fails at startup with a
-                                                # clear error if this is missing, not a buried auth error
+# ─── PostgreSQL (Supabase Cloud) ───
+# Migrated off the local Postgres container (SETUP-004's original design,
+# below in spirit only) onto a managed Supabase instance — one DSN instead
+# of 4 separate POSTGRES_* host/port/db/user/password vars to keep in sync.
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/postgres?ssl=require
 
-# ─── Neo4j ───
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=<generate-strong-password>
+# ─── Neo4j (AuraDB Cloud) ───
+# Migrated off the local Neo4j container (bolt://localhost:7687) onto a
+# managed AuraDB Free instance — note the neo4j+s:// scheme (TLS), not bolt://.
+NEO4J_URI=neo4j+s://<aura_instance_id>.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=<aura-generated-password>
 
-# ─── ChromaDB ───
-CHROMA_HOST=localhost                  # use "chromadb" (the service name) when backend/worker
-                                        # talk to it over the Docker network
-CHROMA_PORT=8000                       # container-internal port — always 8000, even though the
-                                        # host-mapped port below is 8001. Backend/worker connect
-                                        # over the Docker network at container-internal 8000; 8001
-                                        # is only for reaching it from your host machine (curl, etc.)
-CHROMA_COLLECTION_CHUNKS=paper_chunks
-CHROMA_COLLECTION_ENTITIES=entity_embeddings
+# ─── Qdrant Cloud (vector store) ───
+# Migrated off the local ChromaDB container — src/vectorstore/store.py's
+# QdrantCollectionAdapter keeps the same .get()/.add()/.delete()/.query()
+# interface the rest of the pipeline already used, so nothing above the
+# vectorstore layer needed to change for this migration.
+QDRANT_URL=https://<cluster_id>.<region>.gcp.cloud.qdrant.io
+QDRANT_API_KEY=<qdrant-api-key>
+QDRANT_COLLECTION_CHUNKS=paper_chunks
+QDRANT_COLLECTION_ENTITIES=entity_embeddings
 
-# ─── Redis (Celery broker) ───
-REDIS_URL=redis://localhost:6379/0
+# ─── Redis (Upstash Cloud — Celery broker + result backend) ───
+# Migrated off the local Redis container — note the rediss:// scheme (TLS).
+REDIS_URL=rediss://default:<password>@<host>.upstash.io:6379
 
 # ─── LLM API ───
 # BUILD PHASE (default): gemini — free tier, no card. Measured live
@@ -2080,14 +2099,15 @@ LLM_RATE_LIMIT_RPM=15                  # Gemini free tier default (Flash: 15 RPM
 EMBEDDING_PROVIDER=local               # local | openai
 EMBEDDING_MODEL=all-MiniLM-L6-v2       # scale: text-embedding-3-small
 EMBEDDING_DIMENSION=384                # 384 for MiniLM, 1536 for OpenAI
-# ⚠️ NOTE: ChromaDB locks a collection's vector dimension at creation time.
-# Switching EMBEDDING_PROVIDER (local ↔ openai) after papers are already
-# ingested does NOT just work by flipping this env var — the existing
-# `paper_chunks` and `entity_embeddings` collections were created at the old
-# dimension and will reject writes at the new one. You must delete and
-# recreate both collections (and re-embed/re-ingest all papers) when
-# changing embedding provider. Fine to switch before ingesting real data;
-# plan for a full re-ingestion if switching after.
+# ⚠️ NOTE: Qdrant locks a collection's vector dimension at creation time
+# (same caveat applied to the ChromaDB collections this replaced). Switching
+# EMBEDDING_PROVIDER (local ↔ openai) after papers are already ingested does
+# NOT just work by flipping this env var — the existing `paper_chunks` and
+# `entity_embeddings` collections were created at the old dimension and will
+# reject writes at the new one. You must delete and recreate both
+# collections (and re-embed/re-ingest all papers) when changing embedding
+# provider. Fine to switch before ingesting real data; plan for a full
+# re-ingestion if switching after.
 
 # ─── Retrieval Config ───
 VECTOR_TOP_K=10                        # Chunks to retrieve from vector search
@@ -2132,16 +2152,21 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:3000"
 
-    # PostgreSQL
+    # PostgreSQL — postgres_host/port/db/user/password below are pre-cloud-migration
+    # fallback defaults, only used if DATABASE_URL (Supabase's DSN) isn't set.
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "litgraph"
     postgres_user: str = "litgraph_user"
-    postgres_password: str  # required — no safe default, fail loudly at startup if missing
+    postgres_password: str = "devpassword123"
+    database_url_raw: str = Field(default="", alias="DATABASE_URL")  # Supabase DSN, takes priority
 
     @property
     def database_url(self) -> str:
-        """SQLAlchemy async DSN (used from SETUP-004 onward)."""
+        """SQLAlchemy async DSN. Prefers DATABASE_URL (Supabase Cloud) when set;
+        falls back to assembling one from postgres_host/etc. otherwise."""
+        if self.database_url_raw:
+            return self.database_url_raw
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
@@ -2150,24 +2175,24 @@ class Settings(BaseSettings):
     @property
     def postgres_dsn(self) -> str:
         """Raw asyncpg DSN (used for the /health ping — no ORM involved)."""
-        return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    # Neo4j
-    neo4j_uri: str = "bolt://localhost:7687"
+    # Neo4j — AuraDB Cloud. neo4j+s:// scheme (TLS), not bolt://.
+    neo4j_uri: str = "bolt://localhost:7687"  # overridden by .env's neo4j+s://...auradb DSN
     neo4j_user: str = "neo4j"
     neo4j_password: str  # required — no safe default, fail loudly at startup if missing
 
-    # ChromaDB
+    # Qdrant Cloud (vector store) — migrated off ChromaDB; chroma_host/port below are
+    # unused legacy fallback fields, kept only for backward config compatibility.
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+    qdrant_collection_chunks: str = "paper_chunks"
+    qdrant_collection_entities: str = "entity_embeddings"
     chroma_host: str = "localhost"
     chroma_port: int = 8000
-    chroma_collection_chunks: str = "paper_chunks"
-    chroma_collection_entities: str = "entity_embeddings"
 
-    # Redis / Celery
-    redis_url: str = "redis://localhost:6379/0"
+    # Redis / Celery — Upstash Cloud. rediss:// scheme (TLS), not redis://.
+    redis_url: str = "redis://localhost:6379/0"  # overridden by .env's rediss://...upstash.io DSN
 
     # LLM
     llm_provider: Literal["gemini", "openai", "anthropic", "groq", "openrouter", "ollama"] = "gemini"
@@ -2229,106 +2254,39 @@ settings = Settings()
 
 **As actually implemented** (SETUP-002 through SETUP-007) — `frontend` is still the target shape from `FE-001`, not built yet, so it's kept here as documentation of where this is headed rather than current state. Everything else below matches the real `docker-compose.yml`, including two things the original draft got wrong/incomplete: `chromadb/chroma:latest` was silently breaking on version-mismatch with the pinned Python client (see §8's tradeoffs table), and nothing had a `restart` policy, so a crashed container needed a manual `docker compose up` to come back.
 
+> **Superseded design note:** the `postgres`/`neo4j`/`chromadb`/`redis` service blocks originally
+> shown here (SETUP-004/006's design) were the plan when this doc was written. They were later
+> migrated to managed cloud services — Supabase, Neo4j AuraDB, Qdrant Cloud, and Upstash
+> respectively — once the project moved past single-machine iteration. The actual current
+> `docker-compose.yml` is below; the original all-local design is kept in git history, not
+> reproduced here, since it no longer reflects what runs.
+
 ```yaml
-# docker-compose.yml
+# docker-compose.yml (current)
 services:
   backend:
+    image: prakash7976/litgraph-backend:latest
     build: .
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file: .env
-    depends_on:
-      - postgres
-      - neo4j
-      - chromadb
-      - redis
+    env_file: .env      # cloud DSNs (DATABASE_URL, NEO4J_URI, QDRANT_URL, REDIS_URL) live here
     volumes:
       - ./data:/app/data
 
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-litgraph}
-      POSTGRES_USER: ${POSTGRES_USER:-litgraph_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-    ports:
-      # Configurable host port — a native Postgres install on the dev machine silently shadowed
-      # the container on the default port during SETUP-004; see POSTGRES_HOST_PORT in §6.1.
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-litgraph_user}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  neo4j:
-    image: neo4j:5-community
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "7474:7474"     # Browser
-      - "7687:7687"     # Bolt
-    volumes:
-      - neo4jdata:/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  chromadb:
-    image: chromadb/chroma:1.0.0   # pinned, not :latest — a client/server version mismatch on
-    restart: unless-stopped        # :latest crashed app startup during SETUP-006 (KeyError: '_type')
-    ports:
-      - "8001:8000"
-    volumes:
-      - chromadata:/chroma/chroma
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   celery_worker:
+    image: prakash7976/litgraph-backend:latest
     build: .
     restart: unless-stopped
     command: celery -A src.tasks.celery_app worker --loglevel=info
     env_file: .env
-    depends_on:
-      - redis
-      - postgres
-      - neo4j
-      - chromadb
     volumes:
       - ./data:/app/data
-
-  # --- Not built yet (FE-001) — target shape, shown here for the full picture ---
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-
-volumes:
-  pgdata:
-  neo4jdata:
-  chromadata:
 ```
 
-**Resource footprint note:** This brings up 7 containers simultaneously (postgres, neo4j, chromadb, redis, backend, celery_worker, frontend) on the dev machine. Budget **6-8GB+ free RAM** for Docker Desktop — Neo4j alone defaults to a non-trivial JVM heap. If local resources are tight, reduce Neo4j's heap via `NEO4J_dbms_memory_heap_max__size` in the environment block, or run backend/frontend outside Docker during active development and only containerize the stateful services (postgres/neo4j/chromadb/redis).
+`frontend` isn't containerized either — it runs via `npm run dev` (Vite) outside Docker; see the Quick Start in the README.
+
+**Resource footprint note (updated):** this now brings up just 2 containers (`backend`, `celery_worker`) instead of the original 7 — Postgres/Neo4j/Qdrant/Redis are managed cloud services with no local footprint at all. RAM budget for Docker Desktop drops accordingly; the old "6-8GB+, mind Neo4j's JVM heap" guidance no longer applies since there's no local Neo4j container to size a heap for.
 
 ---
 
@@ -2420,7 +2378,7 @@ unrelated pre-existing rows; fixed same day before it shipped).
 | **LLM for extraction (not fine-tuned model)** | Using GPT-4o-mini / Haiku API calls for entity + relationship extraction | Pro: No training data needed, works out of the box, handles diverse paper styles. Con: Slower, costs per paper, extraction quality depends on prompt engineering. |
 | **Neo4j over networkx** | Using Neo4j even for MVP (not in-memory networkx) | Pro: Cypher query language is powerful for graph traversal, persists across restarts, handles larger graphs. Con: Adds infrastructure complexity (Docker service), learning curve for Cypher. |
 | **Section-aware chunking over fixed-size** | Chunks respect section boundaries | Pro: Better context for extraction + retrieval ("method" section chunks stay coherent). Con: Uneven chunk sizes, some sections very long. |
-| **Separate vector store (ChromaDB) from graph (Neo4j)** | Not using Neo4j's built-in vector index | Pro: ChromaDB is faster for pure vector search, easier to swap out. Con: Two systems to maintain, need to keep IDs consistent. |
+| **Separate vector store (Qdrant Cloud, formerly ChromaDB) from graph (Neo4j)** | Not using Neo4j's built-in vector index | Pro: a dedicated vector store is faster for pure vector search, easier to swap out (proven live — the ChromaDB→Qdrant migration only touched `src/vectorstore/store.py`). Con: two systems to maintain, need to keep IDs consistent. |
 | **Async ingestion (Celery)** | Paper processing runs in background workers | Pro: User doesn't wait 60s per paper in the UI. Con: Adds Redis + Celery infrastructure. |
 | **Gemini free tier as default LLM/embedding provider** | Build phase uses Gemini (free) + local embeddings (free); OpenAI/Anthropic wired in but dormant | Pro: Zero-cost build and demo, no card needed. Con: Gemini free tier RPM/RPD caps slow down large-batch ingestion (need retry/backoff), and free-tier prompts may be used by Google for training — swap to paid provider before processing anything sensitive or before scaling volume. |
 | **Hybrid scoring with tunable weights** | α/β/γ weights as config, not hardcoded | Pro: Can tune retrieval quality empirically. Con: Three hyperparameters to tune, no obvious "right" values without eval data. |
