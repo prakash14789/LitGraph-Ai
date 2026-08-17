@@ -6,6 +6,7 @@ retrieval tuning) reads from here rather than os.environ directly.
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,11 +25,14 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_db: str = "litgraph"
     postgres_user: str = "litgraph_user"
-    postgres_password: str  # required — no safe default, fail loudly at startup if missing
+    postgres_password: str = "devpassword123"
+    database_url_raw: str = Field(default="", alias="DATABASE_URL")
 
     @property
     def database_url(self) -> str:
         """SQLAlchemy async DSN (used from SETUP-004 onward)."""
+        if self.database_url_raw:
+            return self.database_url_raw
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
@@ -37,21 +41,30 @@ class Settings(BaseSettings):
     @property
     def postgres_dsn(self) -> str:
         """Raw asyncpg DSN (used for the /health ping — no ORM involved)."""
-        return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str  # required — no safe default, fail loudly at startup if missing
 
-    # ChromaDB
+    # Qdrant Cloud
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+    qdrant_collection_chunks: str = "paper_chunks"
+    qdrant_collection_entities: str = "entity_embeddings"
+
+    # Legacy ChromaDB aliases for backwards compatibility
     chroma_host: str = "localhost"
     chroma_port: int = 8000
-    chroma_collection_chunks: str = "paper_chunks"
-    chroma_collection_entities: str = "entity_embeddings"
+
+    @property
+    def chroma_collection_chunks(self) -> str:
+        return self.qdrant_collection_chunks
+
+    @property
+    def chroma_collection_entities(self) -> str:
+        return self.qdrant_collection_entities
 
     # Redis / Celery
     redis_url: str = "redis://localhost:6379/0"

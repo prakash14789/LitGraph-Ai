@@ -80,7 +80,12 @@ _API_KEYS = {
 # running on this machine's own hardware), but the cloud models are
 # higher-quality, so prefer them while they have headroom and only fall
 # back to local once every cloud option is actually exhausted.
-_FALLBACK_PROVIDERS = ["gemini", "groq", "huggingface", "cerebras", "openrouter", "ollama"]
+# huggingface/cerebras dropped 2026-08-17 — both consistently 402'd
+# (no billing on either key) every live run since EVAL-002 added them;
+# they only ever added two guaranteed-failed hops before falling through
+# to openrouter/ollama. _API_KEYS/_FALLBACK_MODEL entries left in place,
+# harmless dead config, in case billing is ever added and they're re-added here.
+_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter", "ollama"]
 _FALLBACK_MODEL = {
     "gemini": "gemini-flash-latest",
     # Reverted 2026-08-16: user clarified "qwen everywhere" meant the local

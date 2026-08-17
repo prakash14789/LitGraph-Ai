@@ -18,6 +18,10 @@ data/*
 !data/uploads/.gitkeep
 !data/processed/.gitkeep
 
+# Local DB dumps from the cloud migration (postgres/neo4j/chroma) — large,
+# not source, kept locally as the migration's own safety net instead.
+data_backups/
+
 # Node / frontend
 node_modules/
 frontend/dist/

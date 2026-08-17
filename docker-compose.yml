@@ -1,74 +1,21 @@
+# LitGraph Docker Compose — Cloud Architecture Setup
+# NOTE: PostgreSQL, Neo4j, ChromaDB, and Redis local containers have been migrated to managed cloud services:
+# - PostgreSQL -> Supabase Cloud (DATABASE_URL)
+# - Neo4j -> Neo4j AuraDB Cloud (NEO4J_URI)
+# - ChromaDB -> Qdrant Cloud (QDRANT_URL, QDRANT_API_KEY)
+# - Redis -> Upstash Cloud (REDIS_URL)
+# See implementation_plan.md for full cloud migration documentation.
+
 services:
   backend:
-    # image + build together: `docker compose pull` grabs the CI-built image
-    # from Docker Hub (.github/workflows/docker-publish.yml) instead of
-    # rebuilding locally; `docker compose build` still works for local dev.
     image: prakash7976/litgraph-backend:latest
     build: .
     restart: unless-stopped
     ports:
       - "8000:8000"
     env_file: .env
-    depends_on:
-      - postgres
-      - neo4j
-      - chromadb
-      - redis
     volumes:
       - ./data:/app/data
-
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-litgraph}
-      POSTGRES_USER: ${POSTGRES_USER:-litgraph_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-    ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-litgraph_user}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  neo4j:
-    image: neo4j:5-community
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "7474:7474" # Browser
-      - "7687:7687" # Bolt
-    volumes:
-      - neo4jdata:/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  chromadb:
-    image: chromadb/chroma:1.0.0
-    restart: unless-stopped
-    ports:
-      - "8001:8000"
-    volumes:
-      - chromadata:/chroma/chroma
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   celery_worker:
     image: prakash7976/litgraph-backend:latest
@@ -76,15 +23,5 @@ services:
     restart: unless-stopped
     command: celery -A src.tasks.celery_app worker --loglevel=info
     env_file: .env
-    depends_on:
-      - redis
-      - postgres
-      - neo4j
-      - chromadb
     volumes:
       - ./data:/app/data
-
-volumes:
-  pgdata:
-  neo4jdata:
-  chromadata:

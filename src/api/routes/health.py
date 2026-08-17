@@ -8,7 +8,6 @@ health check itself failing.
 import asyncio
 
 import asyncpg
-import httpx
 import structlog
 from fastapi import APIRouter
 from neo4j import AsyncGraphDatabase
@@ -51,27 +50,27 @@ async def _check_neo4j() -> str:
         await driver.close()
 
 
-async def _check_chromadb() -> str:
-    url = f"http://{settings.chroma_host}:{settings.chroma_port}/api/v2/heartbeat"
+async def _check_qdrant() -> str:
     try:
-        async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_SECONDS) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+        from src.vectorstore.store import get_client
+
+        client = get_client()
+        client.get_collections()
         return "ok"
     except Exception as exc:
-        logger.warning("health_check_failed", service="chromadb", error=str(exc))
+        logger.warning("health_check_failed", service="qdrant", error=str(exc))
         return "unreachable"
 
 
 @router.get("/health")
 async def health_check() -> dict:
-    postgres_status, neo4j_status, chromadb_status = await asyncio.gather(
-        _check_postgres(), _check_neo4j(), _check_chromadb()
+    postgres_status, neo4j_status, qdrant_status = await asyncio.gather(
+        _check_postgres(), _check_neo4j(), _check_qdrant()
     )
     dependencies = {
         "postgresql": postgres_status,
         "neo4j": neo4j_status,
-        "chromadb": chromadb_status,
+        "qdrant": qdrant_status,
     }
     return {
         "status": "ok" if all(v == "ok" for v in dependencies.values()) else "degraded",
