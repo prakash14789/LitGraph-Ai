@@ -21,7 +21,11 @@ import type {
 // localStorage).
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1",
-  timeout: 60000, // 60s — queries can be slow (RETRIEVAL-005's own <15s target, plus margin)
+  // 120s (was 60s) — live finding 2026-08-20: under real quota contention
+  // (gemini/groq exhausted, fallback chain lands on a slower provider) a
+  // query can genuinely take 100s+ server-side; 60s was cutting those off
+  // client-side before the backend ever got to respond, not a CORS/500.
+  timeout: 120000,
 });
 
 export interface UploadResult {

@@ -176,6 +176,15 @@ export const GraphCanvas = forwardRef<
           },
         },
         {
+          // GRAPH-004 hand-off's URL/refresh fallback path: a thicker
+          // selection border alone didn't read as "these are the relevant
+          // ones" against 40+ other nodes at full opacity (live finding
+          // 2026-08-20) — fading everything else out is what actually makes
+          // the highlighted set pop.
+          selector: ".dimmed",
+          style: { opacity: 0.25 },
+        },
+        {
           // GRAPH-003 text search — a static "pulse-on" look toggled by JS
           // (see the pulseIds effect below), not a CSS @keyframes animation:
           // cytoscape renders to <canvas>, not DOM, so there's no element to
@@ -318,10 +327,12 @@ export const GraphCanvas = forwardRef<
       const ids = new Set(highlightIdsRef.current);
       const highlighted = cy.nodes().filter((n) => ids.has(n.id()));
       highlighted.select();
-      highlighted
+      cy.nodes().filter((n) => !ids.has(n.id())).addClass("dimmed");
+      const highlightedEdges = highlighted
         .connectedEdges()
-        .filter((e) => ids.has(e.source().id()) && ids.has(e.target().id()))
-        .addClass("highlighted");
+        .filter((e) => ids.has(e.source().id()) && ids.has(e.target().id()));
+      highlightedEdges.addClass("highlighted");
+      cy.edges().not(highlightedEdges).addClass("dimmed");
     }
     // `layout` deliberately excluded — a pure layout-name change is handled
     // by the effect below, without re-fetching/re-fitting elements.

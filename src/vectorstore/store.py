@@ -59,6 +59,21 @@ class QdrantCollectionAdapter:
                     size=EMBEDDING_DIMENSION, distance=models.Distance.COSINE
                 ),
             )
+        # Unlike ChromaDB (arbitrary metadata filtering, no index needed),
+        # Qdrant Cloud 400s any query/scroll `where` filter on a field with
+        # no payload index — confirmed live: "Index required but not found
+        # for 'paper_id'". Every `where=` filter in this codebase keys on
+        # paper_id or collection_id (see vector_retriever.py,
+        # vanilla_rag/retriever.py, pipeline.py's cleanup path), so both are
+        # indexed here, once, right after the collection itself is ensured.
+        # create_payload_index is idempotent — re-running it on an
+        # already-indexed field is a no-op, not an error.
+        for field in ("paper_id", "collection_id"):
+            self.client.create_payload_index(
+                collection_name=self.name,
+                field_name=field,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
 
     def add(
         self,
@@ -89,6 +104,13 @@ class QdrantCollectionAdapter:
         # Batch upsert points
         if points:
             self.client.upsert(collection_name=self.name, points=points)
+
+    # ChromaDB's Collection.upsert() has the same signature as .add() and the
+    # same add-or-replace semantics — graph_writer.py calls .upsert() (an
+    # entity's embedding must overwrite, not duplicate, on re-resolution) and
+    # qdrant_client.upsert() above is already add-or-replace by point id, so
+    # this is a plain alias, not new behavior.
+    upsert = add
 
     def query(
         self,
@@ -146,6 +168,7 @@ class QdrantCollectionAdapter:
         self,
         ids: list[str] | None = None,
         where: dict | None = None,
+        limit: int | None = None,
     ) -> dict[str, list]:
         q_filter = _build_qdrant_filter(where)
         point_ids = [_to_uuid(i) for i in ids] if ids else None
@@ -160,7 +183,7 @@ class QdrantCollectionAdapter:
             scroll_res, _ = self.client.scroll(
                 collection_name=self.name,
                 scroll_filter=q_filter,
-                limit=10000,
+                limit=limit or 10000,
                 with_payload=True,
             )
             records = scroll_res
@@ -215,7 +238,12 @@ class QdrantCollectionAdapter:
         return self.client.count(collection_name=self.name).count
 
 
+@lru_cache(maxsize=8)
 def get_collection(name: str) -> QdrantCollectionAdapter:
+    # Cached (like get_client() above) — _ensure_exists() does 3 HTTP round
+    # trips (list collections + 2 payload-index creates); every query_similar
+    # call was paying that cost fresh before this, since nothing else in the
+    # codebase holds onto the adapter instance.
     return QdrantCollectionAdapter(name)
 
 

@@ -27,9 +27,33 @@ import uuid
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = structlog.get_logger()
+
+# Live finding 2026-08-20: llm_client.complete() walks its whole provider
+# chain (gemini -> groq -> openrouter) and only re-raises one of these once
+# every provider/key is genuinely exhausted or unreachable - a real,
+# expected state under heavy free-tier usage, not a server bug. It used to
+# land here as an indistinguishable generic 500 ("internal server error"),
+# which read to a user exactly like a crash. AuthenticationError/
+# BadRequestError deliberately excluded - llm_client.py itself treats those
+# as immediately-fatal config/bug errors (bad key, bad request), never
+# retries them, so they should keep surfacing as a real 500, not this.
+_LLM_EXHAUSTED = (
+    RateLimitError,
+    InternalServerError,
+    APIStatusError,
+    APITimeoutError,
+    APIConnectionError,
+)
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -39,6 +63,23 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         try:
             try:
                 response = await call_next(request)
+            except _LLM_EXHAUSTED as exc:
+                logger.error(
+                    "llm_providers_exhausted",
+                    path=request.url.path,
+                    method=request.method,
+                    error=str(exc),
+                    exc_info=exc,
+                )
+                response = JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "AI provider temporarily unavailable (rate-limited or "
+                        "overloaded across every configured provider) — please try again "
+                        "in a while.",
+                        "request_id": request_id,
+                    },
+                )
             except Exception as exc:
                 logger.error(
                     "unhandled_exception",

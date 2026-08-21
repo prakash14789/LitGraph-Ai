@@ -87,6 +87,27 @@ RETURN type(r) AS rel_type, startNode(r) = n AS from_self,
        coalesce(m.canonical_name, m.name, m.title, m.text) AS other_name,
        properties(r) AS properties
 """
+# GET /graph/entity/{id}?collection_id=... — the entity itself stays
+# collection-agnostic (a shared Method/Dataset is real, not a leak), but
+# its relationship list can otherwise show a Paper/Claim from a different
+# collection. Same in/out-of-collection rule graph_retriever.py's
+# _filter_by_collection already applies elsewhere: Paper by collection_id,
+# Claim by source_paper_id against this collection's own paper_ids
+# ($paper_ids — see COLLECTION_PAPER_IDS below); every other label passes
+# through untouched.
+ENTITY_RELATIONSHIPS_SCOPED = """
+MATCH (n)-[r]-(m) WHERE elementId(n) = $id
+AND (
+    (NOT m:Paper AND NOT m:Claim)
+    OR (m:Paper AND m.collection_id = $collection_id)
+    OR (m:Claim AND m.source_paper_id IN $paper_ids)
+)
+RETURN type(r) AS rel_type, startNode(r) = n AS from_self,
+       elementId(m) AS other_id, labels(m) AS other_labels,
+       coalesce(m.canonical_name, m.name, m.title, m.text) AS other_name,
+       properties(r) AS properties
+"""
+COLLECTION_PAPER_IDS = "MATCH (p:Paper {collection_id: $collection_id}) RETURN p.paper_id AS pid"
 
 # Every existing Method/Dataset node, across all papers — the "real Neo4j
 # lookup" entity_resolver.py's and relation_extractor.py's candidate-list

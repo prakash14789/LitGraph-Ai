@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Download, Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 
 import { GraphCanvas, type GraphCanvasHandle, type GraphLayoutName } from "@/components/GraphCanvas";
 import { Button } from "@/components/ui/button";
@@ -61,7 +61,12 @@ const LEGEND_REL_TYPES = [
 
 export function GraphPage() {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const canvasRef = useRef<GraphCanvasHandle>(null);
+  // GRAPH-004 hand-off state is only good for the very first load — a later
+  // collection-switch must always hit the fetch path below, not keep
+  // re-serving the stale answer-subgraph from whenever the page was opened.
+  const usedHandoffStateRef = useRef(false);
 
   const [allNodes, setAllNodes] = useState<GraphNode[]>([]);
   const [allEdges, setAllEdges] = useState<SubgraphEdge[]>([]);
@@ -90,6 +95,23 @@ export function GraphPage() {
   const collections = collectionsQuery.data ?? [];
 
   useEffect(() => {
+    if (!usedHandoffStateRef.current) {
+      usedHandoffStateRef.current = true;
+      const handoff = location.state as { nodes?: GraphNode[]; edges?: SubgraphEdge[] } | null;
+      if (handoff?.nodes?.length) {
+        // Exact answer subgraph, handed off directly (see ContextPanel's
+        // viewFullGraph) — render precisely this, no fetch, no re-traversal
+        // that could pull in nodes the answer never actually used. Nothing
+        // to highlight separately — everything on screen already is the
+        // relevant set.
+        setAllNodes(handoff.nodes);
+        setAllEdges(handoff.edges ?? []);
+        setRevealedIds(new Set());
+        setLoading(false);
+        setError(null);
+        return;
+      }
+    }
     const entityId = searchParams.get("entity_id");
     const highlight = searchParams.get("highlight");
     setLoading(true);

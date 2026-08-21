@@ -74,6 +74,10 @@ ORDER BY coalesce(r.confidence, 0.0) DESC
 LIMIT $row_limit
 """
 _PAPER_ELEMENT_IDS = "MATCH (p:Paper) WHERE p.paper_id IN $paper_ids RETURN elementId(p) AS id"
+_PAPER_ELEMENT_IDS_SCOPED = (
+    "MATCH (p:Paper) WHERE p.paper_id IN $paper_ids AND p.collection_id = $collection_id "
+    "RETURN elementId(p) AS id"
+)
 
 
 @dataclass
@@ -113,7 +117,7 @@ async def retrieve_subgraph(
     docstring), so there's no single collection to filter the MATCH by up
     front. Applied after the fact instead, see _filter_by_collection."""
     hops = max(1, min(4, hops or settings.graph_traversal_hops))
-    seed_ids = await _resolve_seed_ids(seeds)
+    seed_ids = await _resolve_seed_ids(seeds, collection_id)
     if not seed_ids:
         return Subgraph(nodes=[], edges=[], seed_ids=[])
 
@@ -133,10 +137,17 @@ async def retrieve_subgraph(
         )
         rows = [record async for record in result]
 
-    subgraph = _cap_subgraph(rows, set(seed_ids), entity_types, max_nodes, seed_ids)
+    # Live finding 2026-08-20: the 200-node cap used to apply BEFORE the
+    # collection filter - out-of-collection nodes (reachable from a shared
+    # entity, or from an out-of-collection paper_id that leaked into the
+    # seed list, see vector_retriever.py's own fix) could consume cap
+    # budget that genuinely in-collection nodes then lost out on, making a
+    # scoped query's retrieval silently incomplete. Filter first, cap last,
+    # so a trim only ever removes lower-confidence *in-scope* material.
+    subgraph = _build_subgraph(rows, entity_types, seed_ids)
     if collection_id is not None:
         subgraph = _filter_by_collection(subgraph, collection_id)
-    return subgraph
+    return _cap_nodes(subgraph, max_nodes)
 
 
 async def resolve_collection_paper_seed_ids(collection_id: str) -> list[str]:
@@ -163,55 +174,97 @@ def _filter_by_collection(subgraph: Subgraph, collection_id: str) -> Subgraph:
     in-collection paper, which is POLISH-005b's own recommended shared-
     entity behavior (decision (a): collection-agnostic, provenance-scoped)
     falling out of a plain graph prune rather than needing its own rule.
-    Single pass, not iterative — direct Paper-node edges are the only ones
-    ever cut, so nothing further downstream needs a second pass to notice."""
+
+    Claim nodes get the same treatment, explicitly — live finding
+    2026-08-20: unlike Method/Dataset (only ever reachable *through* a
+    Paper edge, so the connectivity prune above already catches them),
+    a Claim can independently be a traversal seed in its own right (it's
+    embedded in Chroma same as any named entity — see graph_writer.py's
+    write_claim), so it can survive with an edge to some *other* node
+    while its own source_paper_id points at an out-of-collection paper —
+    a different collection's claim text leaking straight into a scoped
+    query's context. Checked against the source_paper_id *property*
+    (a Postgres paper_id, the Paper node's own MERGE key), not an
+    elementId — the two id spaces are different and not interchangeable.
+    Single pass, not iterative — Paper/Claim are the only labels this
+    module ever writes with paper provenance, so nothing further
+    downstream needs a second pass to notice a drop."""
     keep_paper_ids = {
         n.node_id
         for n in subgraph.nodes
         if "Paper" in n.labels and n.properties.get("collection_id") == collection_id
     }
     drop_paper_ids = {n.node_id for n in subgraph.nodes if "Paper" in n.labels} - keep_paper_ids
-    if not drop_paper_ids:
+    in_collection_paper_ids = {
+        n.properties.get("paper_id") for n in subgraph.nodes if n.node_id in keep_paper_ids
+    }
+    drop_claim_ids = {
+        n.node_id
+        for n in subgraph.nodes
+        if "Claim" in n.labels
+        and n.properties.get("source_paper_id") not in in_collection_paper_ids
+    }
+    drop_ids = drop_paper_ids | drop_claim_ids
+    if not drop_ids:
         return subgraph
 
     edges = [
-        e
-        for e in subgraph.edges
-        if e.source_id not in drop_paper_ids and e.target_id not in drop_paper_ids
+        e for e in subgraph.edges if e.source_id not in drop_ids and e.target_id not in drop_ids
     ]
     connected_ids = {e.source_id for e in edges} | {e.target_id for e in edges}
     nodes = [
         n
         for n in subgraph.nodes
-        if n.node_id not in drop_paper_ids
-        and (n.node_id in connected_ids or n.node_id in keep_paper_ids)
+        if n.node_id not in drop_ids and (n.node_id in connected_ids or n.node_id in keep_paper_ids)
     ]
-    seed_ids = [s for s in subgraph.seed_ids if s not in drop_paper_ids]
+    seed_ids = [s for s in subgraph.seed_ids if s not in drop_ids]
     return Subgraph(nodes=nodes, edges=edges, seed_ids=seed_ids)
 
 
-async def _resolve_seed_ids(seeds: SeedResult) -> list[str]:
-    """Entity seeds already carry an elementId. Paper seeds carry a
-    Postgres paper_id and need one lookup to become the Paper node's
-    elementId."""
+async def _resolve_seed_ids(seeds: SeedResult, collection_id: str | None = None) -> list[str]:
+    """Entity seeds already carry an elementId — left unscoped even when
+    collection_id is set, matching vector_retriever.py's own documented
+    tradeoff (a real shared entity is collection-agnostic by design).
+
+    Paper seeds carry a Postgres paper_id and need one lookup to become the
+    Paper node's elementId. Live finding 2026-08-20: SeedResult.paper_ids is
+    a merge of chunk-derived ids (already collection-scoped — _search_chunks
+    applies the Chroma where-filter) AND entity-derived ids from a shared
+    entity's source_papers metadata (deliberately NOT collection-scoped,
+    same tradeoff as above) — that second half could pull a genuinely
+    out-of-collection paper in as a full traversal SEED, not just a leaf
+    node one hop away, handing it the same standing as an in-collection one
+    (seeds skip the entity_types filter entirely) and letting its whole
+    local neighborhood compete for the node cap. Scoped here rather than
+    where paper_ids is built (vector_retriever.py is deliberately DB-free,
+    no way for it to know collection membership) — filtering the *merged*
+    list against collection_id is safe either way, since the chunk-derived
+    half is already in-collection by construction and this only ever
+    narrows, never wrongly drops, that half."""
     seed_ids = [e.node_id for e in seeds.entities]
     if not seeds.paper_ids:
         return seed_ids
 
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(_PAPER_ELEMENT_IDS, paper_ids=list(seeds.paper_ids))
+        if collection_id is not None:
+            result = await session.run(
+                _PAPER_ELEMENT_IDS_SCOPED,
+                paper_ids=list(seeds.paper_ids),
+                collection_id=collection_id,
+            )
+        else:
+            result = await session.run(_PAPER_ELEMENT_IDS, paper_ids=list(seeds.paper_ids))
         seed_ids += [record["id"] async for record in result]
     return seed_ids
 
 
-def _cap_subgraph(
-    rows,
-    seed_ids: set[str],
-    entity_types: list[str] | None,
-    max_nodes: int,
-    all_seed_ids: list[str],
-) -> Subgraph:
+def _build_subgraph(rows, entity_types: list[str] | None, all_seed_ids: list[str]) -> Subgraph:
+    """Builds the full subgraph from traversal rows — entity_types still
+    applies (a cheap node-type filter, unrelated to node-count capping) but
+    the 200-node cap does NOT happen here anymore (see _cap_nodes) so a
+    collection filter gets a chance to run on the complete set first."""
+    seed_ids = set(all_seed_ids)
     nodes: dict[str, GraphNode] = {}
     edges: list[GraphEdge] = []
 
@@ -223,15 +276,34 @@ def _cap_subgraph(
             if b_id not in seed_ids and not set(row["b_labels"]) & set(entity_types):
                 continue
 
-        new_ids = {nid for nid in (a_id, b_id) if nid not in nodes}
-        if new_ids and len(nodes) + len(new_ids) > max_nodes:
-            continue  # would exceed the cap and doesn't already fit
-
         nodes.setdefault(a_id, GraphNode(a_id, row["a_labels"], _clean_props(row["a_props"])))
         nodes.setdefault(b_id, GraphNode(b_id, row["b_labels"], _clean_props(row["b_props"])))
         edges.append(GraphEdge(a_id, b_id, row["rel_type"], dict(row["rel_props"])))
 
     return Subgraph(nodes=list(nodes.values()), edges=edges, seed_ids=all_seed_ids)
+
+
+def _cap_nodes(subgraph: Subgraph, max_nodes: int) -> Subgraph:
+    """Trims to max_nodes — same greedy "take highest-confidence edges
+    first, an edge later in the list can still be admitted if it only
+    touches already-admitted nodes" logic the old single-pass _cap_subgraph
+    always used, just running over an already-collection-filtered edge list
+    (still in its original confidence-sorted order) instead of raw rows."""
+    if len(subgraph.nodes) <= max_nodes:
+        return subgraph
+
+    node_by_id = {n.node_id: n for n in subgraph.nodes}
+    kept: dict[str, GraphNode] = {}
+    edges: list[GraphEdge] = []
+    for e in subgraph.edges:
+        new_ids = {nid for nid in (e.source_id, e.target_id) if nid not in kept}
+        if new_ids and len(kept) + len(new_ids) > max_nodes:
+            continue  # would exceed the cap and doesn't already fit
+        for nid in (e.source_id, e.target_id):
+            kept.setdefault(nid, node_by_id[nid])
+        edges.append(e)
+
+    return Subgraph(nodes=list(kept.values()), edges=edges, seed_ids=subgraph.seed_ids)
 
 
 def _clean_props(props: dict) -> dict:

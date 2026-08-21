@@ -85,15 +85,29 @@ _API_KEYS = {
 # they only ever added two guaranteed-failed hops before falling through
 # to openrouter/ollama. _API_KEYS/_FALLBACK_MODEL entries left in place,
 # harmless dead config, in case billing is ever added and they're re-added here.
-_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter", "ollama"]
+#
+# ollama (local qwen2.5:14b): dropped 2026-08-17 (misconfigured URL, looked
+# dead), re-added 2026-08-18 (URL fix proved it answers), dropped again
+# 2026-08-19 after it hung mid-extraction-run with nothing behind it to fail
+# over to. Re-added the same day once max_retries=0 + the 180s client
+# timeout bounded the worst case to ~9 min — but then failed *every* real
+# pipeline run it was reached in afterward (3+ occurrences, 0 successes),
+# despite passing an isolated 4/4-call standalone test. The standalone test
+# had nothing else competing for this machine's CPU/RAM; a real pipeline run
+# has its own embedding model running at the same time, and that contention
+# is the likely reason it can't keep up for real. Dropped again, this time
+# on live evidence across multiple real runs, not a single hang — reconsider
+# only if it's ever swapped for something this hardware can sustain under
+# real concurrent load, not just standalone.
+_FALLBACK_PROVIDERS = ["gemini", "groq", "openrouter"]
 _FALLBACK_MODEL = {
     "gemini": "gemini-flash-latest",
-    # Reverted 2026-08-16: user clarified "qwen everywhere" meant the local
-    # Ollama swap only (see EXTRACTION_MODEL's .env comment) — Groq itself,
-    # primary or fallback, stays on llama-3.3-70b-versatile. This entry is
-    # currently unreachable dead code anyway (groq IS the configured primary
-    # provider, so the chain never fails *over to* it), kept in sync anyway.
-    "groq": "llama-3.3-70b-versatile",
+    # Kept in sync with EXTRACTION_MODEL's .env value (openai/gpt-oss-120b,
+    # 2026-08-19 — llama-3.3-70b-versatile was decommissioned, see that
+    # comment for the live finding). This entry is currently unreachable
+    # dead code anyway (groq IS the configured primary provider, so the
+    # chain never fails *over to* it) — kept in sync regardless.
+    "groq": "openai/gpt-oss-120b",
     # EVAL-002 live finding: this key's account has no Llama model access —
     # client.models.list() returned only zai-glm-4.7/gpt-oss-120b/gemma-4-31b,
     # and all three 402'd ("Payment required") on a real test call. gpt-oss-120b
@@ -189,11 +203,49 @@ class _KeyRing:
 _key_ring = _KeyRing()
 
 
+def reset_key_ring() -> None:
+    """Live finding: the module-level ring is sticky for the whole worker
+    *process's* lifetime, not per-paper — so once one paper's run pushes it
+    all the way to the last fallback (e.g. a transient OpenRouter 502
+    advancing into Ollama), every subsequent paper processed by that same
+    long-running Celery worker inherits the already-degraded state and never
+    gets to retry gemini/groq/openrouter fresh, even though their failure
+    may have been transient (a 503, a rate-limit window) rather than a hard
+    daily-quota exhaustion. Confirmed live: back-to-back paper runs on one
+    worker — the second showed zero new llm.provider_failover log lines,
+    meaning it started already stuck on the first paper's final fallback.
+    Called at the start of each pipeline run (see pipeline.py) so every
+    paper gets its own fair shot at the full chain, same as a fresh
+    worker restart used to force before this existed."""
+    global _key_ring
+    _key_ring = _KeyRing()
+
+
 def _client(ring: _KeyRing) -> OpenAI:
     # Not cached: a rotated key/provider must produce a fresh client on the
     # very next call, and constructing an OpenAI() instance does no network
     # I/O — the cache was saving essentially nothing.
-    return OpenAI(api_key=ring.current(), base_url=_BASE_URLS[ring.provider()])
+    #
+    # timeout=180s, not the SDK's ~600s default — live finding: a reachable
+    # but overloaded/unresponsive provider (local Ollama on this machine's
+    # hardware, real completions measured taking 10+ minutes) doesn't fail
+    # fast enough for _RETRYABLE's own backoff/failover to matter — 3
+    # attempts against a 10-minute hang burns ~30 minutes per call before
+    # ever reaching a real error. 180s comfortably covers real cloud calls
+    # (measured live at 90-130s for OpenRouter's free-tier model) while
+    # still failing a genuinely stuck call fast enough for failover to work.
+    # max_retries=0 — the SDK's own default (2) retries transparently
+    # *inside* one .create() call on timeout, invisible to complete()'s own
+    # retry/backoff/failover loop. Live finding: this compounds catastrophically
+    # with a genuinely-hung provider — 3 of our own backoff attempts, each
+    # silently multiplied by the SDK's 2 extra internal retries, each eating
+    # a full 180s timeout, turned one dead Ollama call into a ~24-minute
+    # stall before the job finally failed. We already have our own retry
+    # logic; a second hidden layer underneath it isn't a safety net, it's
+    # unbounded latency.
+    return OpenAI(
+        api_key=ring.current(), base_url=_BASE_URLS[ring.provider()], timeout=180.0, max_retries=0
+    )
 
 
 class _RateLimiter:
@@ -275,6 +327,18 @@ def complete(
         # structured-output use case here (JSON extraction, YES/NO
         # verification, judge scores), not just one call site.
         extra = {"reasoning_effort": "none"} if effective_model.startswith("qwen/") else {}
+        # Live finding: Groq's free tier caps openai/gpt-oss-120b at 8000
+        # tokens/minute, and that check counts the *requested* max_tokens
+        # budget, not actual usage — confirmed live, a one-word prompt with
+        # max_tokens=8192 still 413'd ("Requested 8265"). EXTRACTION_MAX_TOKENS
+        # (8192, .env) was tuned for the old local Ollama model's rambling
+        # output, not this cap. The real section/candidate-list content is
+        # small by comparison (measured live: a 194-entity candidate list is
+        # ~1000 tokens) — chunking that wouldn't have helped, since an empty
+        # prompt alone already exceeds the cap at max_tokens=8192. Capped
+        # here, not in .env, so it only clamps the provider that actually
+        # has this limit; gemini/openrouter keep the caller's real budget.
+        effective_max_tokens = min(max_tokens, 3000) if ring.provider() == "groq" else max_tokens
         try:
             response = _client(ring).chat.completions.create(
                 model=effective_model,
@@ -282,7 +346,7 @@ def complete(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
                 temperature=temperature,
                 **extra,
             )
@@ -314,6 +378,35 @@ def complete(
                 logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
                 time.sleep(backoff)
                 continue
+            content = response.choices[0].message.content
+            # .strip() check, not bare truthiness: a whitespace-only string
+            # ("   "/"\n") is truthy in Python, so `if not content:` let a
+            # near-blank completion sail straight through as a "real"
+            # answer - rendered as visually empty markdown while sources
+            # still showed, indistinguishable from this exact bug's
+            # original symptom. Same retry/failover treatment either way.
+            if not content or not content.strip():
+                # Live finding 2026-08-20 (Compare page): choices non-empty
+                # (so the check above doesn't catch it) but message.content
+                # itself is None/"" - a "successful" call that produced
+                # nothing usable (seen with reasoning-style models that can
+                # put text in a different field, or a genuine empty-gen
+                # glitch). This used to `return ""` here with no retry, no
+                # failover, no error - a real answer silently became an
+                # empty string with nothing downstream able to tell the
+                # difference from "the model legitimately said nothing".
+                # Same treatment as the empty-choices case just above:
+                # advance the ring and retry before giving up.
+                logger.warning("llm.empty_content", provider=ring.provider(), model=effective_model)
+                if ring.advance():
+                    continue
+                backoff_attempt += 1
+                if backoff_attempt >= _MAX_ATTEMPTS:
+                    raise RuntimeError("LLM call returned an empty message")
+                backoff = 2**backoff_attempt
+                logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
+                time.sleep(backoff)
+                continue
             usage = response.usage
             logger.info(
                 "llm.completion",
@@ -322,7 +415,7 @@ def complete(
                 prompt_tokens=usage.prompt_tokens if usage else None,
                 completion_tokens=usage.completion_tokens if usage else None,
             )
-            return response.choices[0].message.content or ""
+            return content
         except (AuthenticationError, BadRequestError):
             raise
         except (RateLimitError, InternalServerError, APIStatusError):
@@ -335,6 +428,13 @@ def complete(
             logger.warning("llm.retry", attempt=backoff_attempt, backoff_seconds=backoff)
             time.sleep(backoff)
         except _RETRYABLE:
+            # Same "advance before backing off" logic as the branch above —
+            # this docstring already claimed that behavior, but the code
+            # didn't actually call ring.advance() here, so a connection
+            # hiccup on one provider burned all _MAX_ATTEMPTS retries against
+            # that same provider instead of trying the next one first.
+            if ring.advance():
+                continue
             backoff_attempt += 1
             if backoff_attempt >= _MAX_ATTEMPTS:
                 raise

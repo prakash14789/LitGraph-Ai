@@ -205,8 +205,7 @@ async def fetch_candidate_entities() -> list[ResolvableEntity]:
     Neo4j session machinery either way."""
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(EXISTING_NAMED_ENTITIES)
-        records = [record async for record in result]
+        records = await session.execute_read(_read_existing_entities_tx)
     return [
         ResolvableEntity(
             name=r["canonical_name"],
@@ -220,29 +219,46 @@ async def fetch_candidate_entities() -> list[ResolvableEntity]:
     ]
 
 
+async def _read_existing_entities_tx(tx):
+    result = await tx.run(EXISTING_NAMED_ENTITIES)
+    return [record async for record in result]
+
+
 async def write_relationship(
     rel_type: str, source_id: str, target_id: str, properties: dict
 ) -> str:
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(
-            _MERGE_REL.format(rel_type=rel_type),
-            source_id=source_id,
-            target_id=target_id,
-            props=properties,
+        record = await session.execute_write(
+            _write_relationship_tx, rel_type, source_id, target_id, properties
         )
-        record = await result.single()
     return record["id"]
+
+
+async def _write_relationship_tx(
+    tx, rel_type: str, source_id: str, target_id: str, properties: dict
+):
+    result = await tx.run(
+        _MERGE_REL.format(rel_type=rel_type),
+        source_id=source_id,
+        target_id=target_id,
+        props=properties,
+    )
+    return await result.single()
 
 
 async def _merge_node(label: str, key: str, key_value: str, props: dict) -> str:
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(
-            _MERGE_NODE.format(label=label, key=key), key_value=key_value, props=props
-        )
-        record = await result.single()
+        record = await session.execute_write(_merge_node_tx, label, key, key_value, props)
     return record["id"]
+
+
+async def _merge_node_tx(tx, label: str, key: str, key_value: str, props: dict):
+    result = await tx.run(
+        _MERGE_NODE.format(label=label, key=key), key_value=key_value, props=props
+    )
+    return await result.single()
 
 
 def _upsert_chroma_entity(

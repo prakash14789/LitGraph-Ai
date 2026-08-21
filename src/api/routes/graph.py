@@ -17,9 +17,11 @@ from src.api.schemas.graph import (
 from src.api.schemas.query import SubgraphEdgeSchema
 from src.graph.connection import get_driver
 from src.graph.queries import (
+    COLLECTION_PAPER_IDS,
     EDGE_COUNTS_BY_TYPE,
     ENTITY_BY_ID,
     ENTITY_RELATIONSHIPS,
+    ENTITY_RELATIONSHIPS_SCOPED,
     NODE_COUNTS_BY_LABEL,
     WHOLE_GRAPH_EDGES,
     WHOLE_GRAPH_NODES,
@@ -299,7 +301,14 @@ async def _collection_graph_rows(
 
 
 @router.get("/graph/entity/{entity_id}", response_model=EntityDetailResponse)
-async def graph_entity(entity_id: str) -> EntityDetailResponse:
+async def graph_entity(
+    entity_id: str,
+    collection_id: str | None = Query(
+        None,
+        description="Scope the relationship list to this collection's own Papers/Claims — "
+        "the entity itself stays collection-agnostic (a shared Method/Dataset isn't a leak).",
+    ),
+) -> EntityDetailResponse:
     driver = get_driver()
     async with driver.session() as session:
         node_result = await session.run(ENTITY_BY_ID, id=entity_id)
@@ -307,7 +316,17 @@ async def graph_entity(entity_id: str) -> EntityDetailResponse:
         if node_record is None:
             raise HTTPException(404, "entity not found")
 
-        rel_result = await session.run(ENTITY_RELATIONSHIPS, id=entity_id)
+        if collection_id is not None:
+            paper_ids_result = await session.run(COLLECTION_PAPER_IDS, collection_id=collection_id)
+            paper_ids = [r["pid"] async for r in paper_ids_result]
+            rel_result = await session.run(
+                ENTITY_RELATIONSHIPS_SCOPED,
+                id=entity_id,
+                collection_id=collection_id,
+                paper_ids=paper_ids,
+            )
+        else:
+            rel_result = await session.run(ENTITY_RELATIONSHIPS, id=entity_id)
         rel_rows = [r async for r in rel_result]
 
     label = node_record["labels"][0]
@@ -344,6 +363,12 @@ async def graph_search(
     q: str = Query(..., min_length=1),
     type: str | None = Query(None, description="Filter to one entity label"),
     limit: int = Query(20, ge=1, le=100),
+    collection_id: str | None = Query(
+        None,
+        description="Scope results to one collection — Paper by collection_id, Claim by "
+        "source_paper_id, everything else (a shared entity) by having a relationship into "
+        "one of this collection's Papers.",
+    ),
 ) -> SearchResponse:
     if type is not None and type not in _FULLTEXT_INDEX_BY_LABEL:
         raise HTTPException(400, f"unknown entity type: {type}")
@@ -352,14 +377,32 @@ async def graph_search(
     driver = get_driver()
     results: list[SearchResultItem] = []
     async with driver.session() as session:
+        paper_ids: list[str] = []
+        if collection_id is not None:
+            paper_ids_result = await session.run(COLLECTION_PAPER_IDS, collection_id=collection_id)
+            paper_ids = [r["pid"] async for r in paper_ids_result]
+
         for label in labels:
+            scope_where = ""
+            if collection_id is not None:
+                if label == "Paper":
+                    scope_where = "WHERE node.collection_id = $collection_id "
+                elif label == "Claim":
+                    scope_where = "WHERE node.source_paper_id IN $paper_ids "
+                else:  # Method/Dataset/Author — collection-agnostic shared entities
+                    scope_where = (
+                        "WHERE EXISTS { MATCH (node)--(:Paper {collection_id: $collection_id}) } "
+                    )
             result = await session.run(
                 "CALL db.index.fulltext.queryNodes($index_name, $q) YIELD node, score "
-                "RETURN elementId(node) AS id, labels(node) AS labels, properties(node) AS properties, score "
+                + scope_where
+                + "RETURN elementId(node) AS id, labels(node) AS labels, properties(node) AS properties, score "
                 "LIMIT $limit",
                 index_name=_FULLTEXT_INDEX_BY_LABEL[label],
                 q=q,
                 limit=limit,
+                collection_id=collection_id,
+                paper_ids=paper_ids,
             )
             async for r in result:
                 props = {k: v for k, v in dict(r["properties"]).items() if k != "embedding"}

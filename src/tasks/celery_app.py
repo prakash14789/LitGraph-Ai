@@ -19,10 +19,19 @@ celery_app = Celery(
     include=["src.tasks.ingest_task"],
 )
 
+# Cloud migration live finding: Upstash's REDIS_URL is rediss:// (TLS) with
+# no ssl_cert_reqs query param, and celery/kombu's redis transport refuses to
+# start against a rediss:// URL without one — CRITICAL "Unrecoverable error"
+# on worker boot, immediate crash loop, no task ever picked up. Needed on
+# both the broker and the result backend (two separate redis clients).
+_redis_ssl_opts = {"ssl_cert_reqs": "none"} if settings.redis_url.startswith("rediss://") else None
+
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+    broker_use_ssl=_redis_ssl_opts,
+    redis_backend_use_ssl=_redis_ssl_opts,
     # EVAL-001 live finding: the currently-configured free OpenRouter model
     # (openai/gpt-oss-20b:free) runs ~90-130s per LLM call, and _write_graph
     # makes 3 calls/section (extract_entities + intra/cross relations) before

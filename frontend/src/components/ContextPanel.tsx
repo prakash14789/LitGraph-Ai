@@ -23,20 +23,59 @@ export function ContextPanel({
   const navigate = useNavigate();
   const nodes = message?.retrievedSubgraph?.nodes ?? [];
   const edges = message?.retrievedSubgraph?.edges ?? [];
-  const entityNodes = nodes.filter((n) => n.labels[0] !== "Paper");
   const sources = message?.citations ?? [];
 
-  // GRAPH-004: hand off to the Graph page seeded by this subgraph's
-  // top-ranked node (RETRIEVAL-003 sorts nodes[0] highest) — the API has no
-  // dedicated "this is the seed" field, so the best-ranked node stands in
-  // for one, and the full node id set travels along to be pre-highlighted.
+  // Live finding 2026-08-20: retrievedSubgraph is the graph-traversal's own
+  // ranked candidate set (broader on purpose — see below), not "what the
+  // answer actually discussed". A candidate paper's entity (e.g. ALBERT,
+  // pulled in as a strong entity-seed match) can rank into that set and
+  // never be mentioned in the answer at all — confirmed live, an ELECTRA-
+  // vs-RoBERTa query's Entities panel showed zero ELECTRA entities and
+  // several ALBERT ones. `citations` (now itself tightened — see query.py's
+  // _build_citations) IS answer-aligned, but paper-level only; there's no
+  // entity-level "was this actually cited" signal to filter on directly.
+  // Closest correct proxy: keep only entities with an edge to a Paper
+  // that's actually in citations - a real Paper->Claim/Method/Dataset
+  // edge, not just co-membership in the same broad traversal.
+  //
+  // `nodes`/`edges` themselves stay the RAW, unfiltered retrievedSubgraph —
+  // the mini preview below and "View full graph" both intentionally show
+  // the broader graph-exploration set, not just what got cited.
+  const citedPaperIds = new Set(sources.map((c) => c.paper_id));
+  const citedPaperNodeIds = new Set(
+    nodes
+      .filter((n) => n.labels[0] === "Paper" && citedPaperIds.has(n.properties.paper_id as string))
+      .map((n) => n.id)
+  );
+  const entityNodes = nodes.filter(
+    (n) =>
+      n.labels[0] !== "Paper" &&
+      edges.some(
+        (e) =>
+          (e.source === n.id && citedPaperNodeIds.has(e.target)) ||
+          (e.target === n.id && citedPaperNodeIds.has(e.source))
+      )
+  );
+
+  // GRAPH-004: hand off to the Graph page with the *exact* subgraph this
+  // answer used, via router state — not just an entity_id for GraphPage to
+  // re-derive. Live finding 2026-08-20: a fresh entity_id+hops=2 re-fetch
+  // is a genuinely different (usually bigger) set than what actually
+  // produced the answer — for one real query this was 46 nodes back vs the
+  // 20 actually used, and worse for any hub entity — which read as "why is
+  // it showing me unrelated stuff" even though highlighting was technically
+  // correct. Passing nodes/edges directly means GraphPage renders exactly
+  // this set, no re-traversal, no mismatch possible.
+  // entity_id/highlight stay in the URL too, purely as a refresh/deep-link
+  // fallback (router state doesn't survive a hard reload) — GraphPage
+  // prefers state when present, falls back to the URL params otherwise.
   const viewFullGraph = () => {
     if (nodes.length === 0) return;
     const params = new URLSearchParams({
       entity_id: nodes[0].id,
       highlight: nodes.map((n) => n.id).join(","),
     });
-    navigate(`/graph?${params.toString()}`);
+    navigate(`/graph?${params.toString()}`, { state: { nodes, edges } });
   };
 
   return (

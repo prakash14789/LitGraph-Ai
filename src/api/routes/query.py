@@ -208,7 +208,21 @@ async def _build_citations(
     the ranked subgraph, plus (title resolved via Postgres) any paper that
     only surfaced through a chunk match and never made the ranked top-K —
     not parsed out of the LLM's free-form answer, which would be fragile and
-    can't guarantee "citations match actual papers in the collection"."""
+    can't guarantee "citations match actual papers in the collection".
+
+    Live finding 2026-08-20: the "chunk match" fallback used to pull from
+    seeds.paper_ids — the union of chunk-seed papers AND entity-seed papers
+    (a shared entity's source_papers metadata, deliberately collection-
+    agnostic — see vector_retriever.py). A paper could land in citations
+    purely for being one entity's candidate source, never having
+    contributed a single chunk of actual context the LLM saw, let alone
+    being discussed in its answer — confirmed live (ELECTRA-vs-RoBERTa
+    query): ALBERT and an out-of-collection paper both showed up in
+    citations despite the answer only ever discussing ELECTRA/RoBERTa.
+    Narrowed to seeds.chunks' own paper_ids specifically — every one of
+    those chunks' raw text is guaranteed to have been offered to the LLM
+    as literal context (context_builder.py's RELEVANT TEXT CHUNKS
+    section), which entity-seed candidacy alone never guarantees."""
     citations: dict[str, Citation] = {}
     for scored in ranked.nodes:
         if "Paper" in scored.node.labels:
@@ -220,7 +234,8 @@ async def _build_citations(
                     year=scored.node.properties.get("year"),
                 )
 
-    missing = [pid for pid in seeds.paper_ids if pid and pid not in citations]
+    chunk_paper_ids = {c.paper_id for c in seeds.chunks if c.paper_id}
+    missing = [pid for pid in chunk_paper_ids if pid not in citations]
     if missing:
         titles = await _paper_titles(db, set(missing))
         for paper_id in missing:

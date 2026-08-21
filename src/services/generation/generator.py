@@ -41,7 +41,12 @@ def generate_answer(query: str, context: BuiltContext) -> str:
     if not context.text.strip():
         return "I don't know based on the available papers — no relevant content was found."
 
-    user_prompt = f"{context.text}\n\nQuestion: {query}"
+    # XML delimiters (2026-08-20, security hygiene): with the two run
+    # together as plain text, retrieved context could contain something
+    # that reads like a new instruction ("Question: ...") and get confused
+    # for the actual user question by the model — a low-cost structural
+    # boundary against that, not just against a deliberate injection.
+    user_prompt = f"<context>\n{context.text}\n</context>\n\n<question>\n{query}\n</question>"
     return llm_client.complete(
         system_prompt=_SYSTEM_PROMPT,
         user_prompt=user_prompt,

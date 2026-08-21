@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { apiErrorMessage } from "@/lib/utils";
 import { litgraphApi } from "@/services/api";
 import type { Citation, RetrievalStats, RetrievedSubgraph } from "@/types";
 
@@ -78,8 +79,11 @@ export const useChatStore = create<ChatState>()(
             },
             isLoading: false,
           }));
-        } catch {
-          set({ isLoading: false, error: "Something went wrong answering that question." });
+        } catch (err) {
+          set({
+            isLoading: false,
+            error: apiErrorMessage(err, "Something went wrong answering that question."),
+          });
         }
       };
 

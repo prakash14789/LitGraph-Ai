@@ -23,6 +23,7 @@ _cleanup_partial_chunks exists for the chunk-embedding phase.
 """
 
 import re
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import structlog
@@ -33,13 +34,22 @@ from src.config import settings
 from src.db import AsyncSessionLocal
 from src.models.extraction_job import ExtractionJob, JobStatus
 from src.models.paper import IngestionStatus, Paper
+from src.services.ingestion import extraction_cache
 from src.services.ingestion.chunker import chunk_paper
 from src.services.ingestion.embedding_storage import store_chunks
-from src.services.ingestion.entity_extractor import SectionExtraction, extract_entities
+from src.services.ingestion.entity_extractor import (
+    ExtractedClaim,
+    ExtractedDataset,
+    ExtractedMethod,
+    ExtractedMetric,
+    SectionExtraction,
+    extract_entities,
+)
 from src.services.ingestion.entity_resolver import (
     ResolutionResult,
     ResolvableEntity,
     _cosine_similarity,
+    reset_verification_key_ring,
     resolve_entity,
 )
 from src.services.ingestion.graph_writer import (
@@ -56,6 +66,7 @@ from src.services.ingestion.relation_extractor import (
     extract_cross_paper_relations,
     extract_intra_paper_relations,
 )
+from src.utils import llm_client
 from src.vectorstore.embedder import embed
 from src.vectorstore.store import get_collection
 
@@ -146,6 +157,17 @@ _VERB_HINT_RE = re.compile(
 
 
 async def run_pipeline(job_id: str) -> None:
+    # Live finding: both LLM key rings are sticky module-level singletons
+    # that otherwise persist for the whole Celery worker process's lifetime,
+    # not just one paper's run — so a paper that pushed the ring all the way
+    # to the last fallback (e.g. a transient provider error, not a real
+    # daily-quota exhaustion) left every *subsequent* paper on the same
+    # worker starting already stuck there too, with no fresh shot at
+    # providers that may have recovered. See reset_key_ring()'s own
+    # docstring for the confirmed-live symptom this fixes.
+    llm_client.reset_key_ring()
+    reset_verification_key_ring()
+
     async with AsyncSessionLocal() as session:
         job = await session.get(ExtractionJob, job_id)
         if job is None:
@@ -223,6 +245,12 @@ async def run_pipeline(job_id: str) -> None:
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now(UTC)
             await session.commit()
+            # Only on genuine success - a failed/interrupted run's cache must
+            # survive so the next retry can still skip the sections it
+            # already finished (the whole point of this cache). Cleared here
+            # so a real future reprocess (paper content changed, fix landed)
+            # doesn't silently reuse this run's now-stale results.
+            extraction_cache.clear(paper_id_str)
         except Exception as exc:
             logger.error("pipeline.extraction_failed", job_id=job_id, error=str(exc))
             await session.rollback()  # same reasoning as above
@@ -379,15 +407,31 @@ def _drop_title_and_trivial_claims(
         ext.claims = kept
 
 
+def _section_extraction_from_cache(cached: dict) -> SectionExtraction:
+    return SectionExtraction(
+        methods=[ExtractedMethod(**m) for m in cached["methods"]],
+        datasets=[ExtractedDataset(**d) for d in cached["datasets"]],
+        metrics=[ExtractedMetric(**m) for m in cached["metrics"]],
+        claims=[ExtractedClaim(**c) for c in cached["claims"]],
+    )
+
+
 async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) -> None:
     sections: dict[str, str] = _truncate_sections(_drop_non_content_sections(paper.sections or {}))
     sections = _strip_title_from_preamble(sections, paper.title)
 
     job.status = JobStatus.EXTRACTING_ENTITIES
     await session.commit()
-    extractions: dict[str, SectionExtraction] = {
-        name: extract_entities(name, text) for name, text in sections.items()
-    }
+    paper_id_str = str(paper.id)
+    extractions: dict[str, SectionExtraction] = {}
+    for name, text in sections.items():
+        cached = extraction_cache.load(paper_id_str, name, "entities")
+        if cached is not None:
+            extractions[name] = _section_extraction_from_cache(cached)
+            logger.info("pipeline.entities_cache_hit", paper_id=paper_id_str, section=name)
+            continue
+        extractions[name] = extract_entities(name, text)
+        extraction_cache.save(paper_id_str, name, "entities", asdict(extractions[name]))
     _drop_title_and_trivial_claims(extractions, paper.title)
     _dedupe_claims(extractions)
     entities_found = sum(
@@ -415,12 +459,18 @@ async def _write_graph(session: AsyncSession, job: ExtractionJob, paper: Paper) 
     cross_candidate_tuples = _exclude_own_name_candidates(candidate_tuples, all_own_names)
     relations: dict[str, list[ExtractedRelation]] = {}
     for name, text in sections.items():
+        cached = extraction_cache.load(paper_id_str, name, "relations")
+        if cached is not None:
+            relations[name] = [ExtractedRelation(**r) for r in cached]
+            logger.info("pipeline.relations_cache_hit", paper_id=paper_id_str, section=name)
+            continue
         own_names = [m.name for m in extractions[name].methods] + [
             d.name for d in extractions[name].datasets
         ]
         intra = extract_intra_paper_relations(name, text, own_names)
         cross = extract_cross_paper_relations(name, text, own_names, cross_candidate_tuples)
         relations[name] = intra + cross
+        extraction_cache.save(paper_id_str, name, "relations", [asdict(r) for r in relations[name]])
 
     job.status = JobStatus.RESOLVING_ENTITIES
     await session.commit()

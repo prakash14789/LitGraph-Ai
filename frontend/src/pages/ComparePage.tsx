@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 
 import { GraphCanvas } from "@/components/GraphCanvas";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { apiErrorMessage, cn } from "@/lib/utils";
 import { litgraphApi } from "@/services/api";
 import type { CompareQueryResponse, CompareVerdict } from "@/types";
 
@@ -36,8 +36,14 @@ export function ComparePage() {
     try {
       const { data } = await litgraphApi.compareQuery(q);
       setResult(data);
-    } catch {
-      setError("Comparison failed. Please try again.");
+    } catch (err) {
+      // Live finding 2026-08-21: result used to stay untouched on a failed
+      // retry, so a previous query's full answer+sources kept rendering
+      // right under the (small, easy-to-miss) error line - reading exactly
+      // like "this query got sources but no answer" when it was really a
+      // stale, unrelated answer from an earlier query.
+      setResult(null);
+      setError(apiErrorMessage(err, "Comparison failed. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -224,14 +230,25 @@ function Panel({
         </div>
       )}
 
-      {!loading && answer && (
-        <>
-          {children}
+      {/* children (stats/sources) no longer gated behind `answer` - live
+          finding 2026-08-20: an empty-string answer (a real backend edge
+          case, now fixed at the source in llm_client.py, but worth staying
+          defensive against here too) used to hide the retrieved
+          sources/citations along with it, even though retrieval had
+          genuinely succeeded and that context is still useful on its own. */}
+      {!loading && children}
+      {!loading &&
+        (answer ? (
           <div className="markdown rounded-xl border border-border bg-card px-4 py-3 text-sm shadow-sm">
             <ReactMarkdown>{answer}</ReactMarkdown>
           </div>
-        </>
-      )}
+        ) : (
+          answer !== undefined && (
+            <p className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              No answer was generated for this query.
+            </p>
+          )
+        ))}
     </div>
   );
 }

@@ -10,14 +10,16 @@ import asyncio
 import asyncpg
 import structlog
 from fastapi import APIRouter
-from neo4j import AsyncGraphDatabase
 
 from src.config import settings
+from src.graph.connection import get_driver
 
 router = APIRouter()
 logger = structlog.get_logger()
 
-CHECK_TIMEOUT_SECONDS = 3
+CHECK_TIMEOUT_SECONDS = 8  # was 3 - live finding 2026-08-20: a genuinely
+# healthy AuraDB cold handshake alone measured ~4s, so 3s was flagging a
+# working database as "unreachable" on nothing but its own tight budget.
 
 
 async def _check_postgres() -> str:
@@ -36,9 +38,11 @@ async def _check_postgres() -> str:
 
 
 async def _check_neo4j() -> str:
-    driver = AsyncGraphDatabase.driver(
-        settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
-    )
+    # Reuse the app's shared, pooled driver (src.graph.connection) instead
+    # of standing up a disposable one per call - a fresh driver pays a full
+    # cold TLS/routing-table handshake every single time, which is what
+    # made a healthy AuraDB look "unreachable" against the old 3s budget.
+    driver = get_driver()
     try:
         async with driver.session() as session:
             await asyncio.wait_for(session.run("RETURN 1"), timeout=CHECK_TIMEOUT_SECONDS)
@@ -46,8 +50,6 @@ async def _check_neo4j() -> str:
     except Exception as exc:
         logger.warning("health_check_failed", service="neo4j", error=str(exc))
         return "unreachable"
-    finally:
-        await driver.close()
 
 
 async def _check_qdrant() -> str:

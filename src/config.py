@@ -161,7 +161,14 @@ class Settings(BaseSettings):
     # prose against retrieved context, not exact-string grounding, so some
     # slack for reasonable paraphrase is expected, not itself a red flag.
     faithfulness_threshold: float = 0.6
-    faithfulness_max_tokens: int = 200
+    # 200 was sized for a direct JSON reply. Live finding 2026-08-20: with
+    # gemini/groq quota-exhausted, the fallback chain lands on OpenRouter's
+    # nvidia/nemotron-3-ultra (a reasoning model) - it burns the whole
+    # budget on an unrequested chain-of-thought preamble before ever
+    # reaching "{", so every single check silently came back unparseable
+    # (fails open to "no warning", not a crash - but the audit was doing
+    # nothing). Bumped to give a reasoning model room to think then answer.
+    faithfulness_max_tokens: int = 600
 
     # Embedding
     embedding_provider: Literal["local", "openai"] = "local"

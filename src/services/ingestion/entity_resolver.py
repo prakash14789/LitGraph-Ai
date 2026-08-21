@@ -92,6 +92,15 @@ logger = structlog.get_logger()
 _verification_key_ring = llm_client._KeyRing()
 
 
+def reset_verification_key_ring() -> None:
+    """Same sticky-ring-outlives-the-paper problem as llm_client's own
+    reset_key_ring() (see that docstring) — this ring is independent of the
+    bulk extraction one, but no less sticky across papers on one worker
+    process. Called alongside it at the start of each pipeline run."""
+    global _verification_key_ring
+    _verification_key_ring = llm_client._KeyRing()
+
+
 @dataclass
 class ResolvableEntity:
     """One side of a resolution comparison. `id` is None for the
@@ -212,11 +221,17 @@ def _name_similarity(a: str, b: str) -> float:
     """Generic edit-distance ratio, boosted to 1.0 for two common ML naming
     patterns a raw ratio scores too low to catch (measured live building
     this module — see the module docstring): a suffix-variant ("BERT" /
-    "BERT-base", "GPT" / "GPT2") or an acronym-of-a-full-name
-    ("BERT" / "Bidirectional Encoder Representations from Transformers").
-    Both checks are boundary-aware/stopword-aware specifically to avoid
-    false positives ("BERT" must not prefix-match "BERTHA")."""
-    if _is_prefix_variant(a, b) or _is_acronym_variant(a, b):
+    "BERT-base", "GPT" / "GPT2"), an acronym-of-a-full-name
+    ("BERT" / "Bidirectional Encoder Representations from Transformers"),
+    or a whole-name contained inside another at different specificity
+    ("Wikipedia" / "English Wikipedia" — same corpus, live finding: these
+    resolved to two separate Dataset nodes since neither prefix nor acronym
+    catches a containment that isn't anchored at the start). All three
+    checks are boundary-aware/stopword-aware specifically to avoid false
+    positives ("BERT" must not prefix-match "BERTHA", and must not
+    substring-match "ALBERT" either — this same codebase has both a BERT and
+    an ALBERT paper, so that's a real collision, not a hypothetical one)."""
+    if _is_prefix_variant(a, b) or _is_acronym_variant(a, b) or _is_substring_containment(a, b):
         return 1.0
     return SequenceMatcher(None, _normalize(a), _normalize(b)).ratio()
 
@@ -242,6 +257,24 @@ def _is_acronym_variant(a: str, b: str) -> bool:
     words = [w for w in _WORD_RE.findall(longer) if w.lower() not in _ACRONYM_STOPWORDS]
     acronym = "".join(w[0] for w in words).upper()
     return len(words) >= 2 and acronym == shorter.upper()
+
+
+def _is_substring_containment(a: str, b: str) -> bool:
+    """ "Wikipedia" is a whole word inside "English Wikipedia" — same
+    corpus at different specificity, not a partial-word coincidence. Anchors
+    on both sides of the shorter name within the longer one (start/end of
+    string counts as a boundary too), the same guard _is_prefix_variant uses
+    at one boundary — a plain `a in b` substring test would also match
+    "BERT" inside "ALBERT", which this exact codebase has both of."""
+    shorter, longer = sorted([_normalize(a), _normalize(b)], key=len)
+    if len(shorter) < 2 or shorter == longer:
+        return False
+    idx = longer.find(shorter)
+    if idx == -1:
+        return False
+    before = longer[idx - 1] if idx > 0 else ""
+    after = longer[idx + len(shorter)] if idx + len(shorter) < len(longer) else ""
+    return (not before or not before.isalpha()) and (not after or not after.isalpha())
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
